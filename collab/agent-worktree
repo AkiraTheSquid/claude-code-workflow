@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Give an agent its own git worktree, so two sessions cannot half-write the same
+# file at the same time.
+#
+# Claims (collab.py) keep agents off each other's files inside ONE tree. That is
+# the right tool when the work barely overlaps. When two agents both need the
+# same handful of files -- which is the usual case for two features on one
+# surface -- claims just make them take turns. Separate worktrees let them work
+# at once and pay the cost later, once, as a merge.
+#
+# Worktrees are created OUTSIDE the repository, as a sibling directory. Delta
+# Drills' Colab deploy runs `git add -A && git push` inside its worktree, so a
+# nested worktree under .claude/ (as Delta Note did it) would be swept into a
+# deploy commit.
+#
+#   agent-worktree new <name> ["what this agent is doing"]
+#   agent-worktree list
+#   agent-worktree finish <name>        # merge guidance, then remove
+#
+# The agent in the new worktree may commit there, and may not push, deploy, or
+# `git stash`. The merge back is done by the orchestrating session, by hand.
+
+set -euo pipefail
+
+REPO_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$REPO_DIR" ]; then
+  echo "Not inside a git repository." >&2
+  exit 1
+fi
+
+COMMON_GIT="$(git rev-parse --path-format=absolute --git-common-dir)"
+MAIN_REPO="$(dirname "$COMMON_GIT")"
+REPO_NAME="$(basename "$MAIN_REPO")"
+AGENTS_DIR="$(dirname "$MAIN_REPO")/${REPO_NAME%-Local}-agents"
+
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+
+cmd_new() {
+  local name="${1:-}" task="${2:-}"
+  if [ -z "$name" ]; then echo "Usage: agent-worktree new <name> [\"task\"]" >&2; exit 1; fi
+
+  local branch="agent/$name"
+  local dir="$AGENTS_DIR/$name"
+
+  if git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$branch"; then
+    echo "Branch $branch already exists. Pick another name, or finish the old one:" >&2
+    echo "  agent-worktree finish $name" >&2
+    exit 1
+  fi
+  if [ -e "$dir" ]; then
+    echo "$dir already exists." >&2
+    exit 1
+  fi
+
+  # Branch from the CURRENT HEAD of the repo you are standing in, not from a
+  # hardcoded main: a Colab or deploy worktree branches from what it serves.
+  local base
+  base="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)"
+
+  mkdir -p "$AGENTS_DIR"
+  git -C "$MAIN_REPO" worktree add -b "$branch" "$dir" "$base" >/dev/null
+  echo "worktree  $dir"
+  echo "branch    $branch  (from $base)"
+
+  if [ -n "$task" ]; then
+    printf '%s\n' "$task" > "$dir/.agent-task"
+  fi
+
+  # Repo-scoped Claude config travels with the agent, or its session starts
+  # without the coordination hooks and the isolation is only half real.
+  if [ -d "$REPO_DIR/.claude" ]; then
+    cp -r "$REPO_DIR/.claude" "$dir/.claude"
+    echo "config    copied .claude/ (coordination hooks active there too)"
+  fi
+
+  cat <<EOF
+
+Start the agent with:
+  cd "$dir" && claude
+
+Tell it, in its first message: what it owns, that it commits in THIS worktree
+only, and that it must not push, deploy, or git stash. When it is done:
+  agent-worktree finish $name
+EOF
+}
+
+cmd_list() {
+  git -C "$MAIN_REPO" worktree list | while read -r path rest; do
+    case "$path" in
+      "$AGENTS_DIR"/*)
+        local_name="$(basename "$path")"
+        task="$(cat "$path/.agent-task" 2>/dev/null || echo '(no task recorded)')"
+        printf '%-28s %s\n     %s\n' "$local_name" "$rest" "$task"
+        ;;
+    esac
+  done
+  echo
+  echo "All worktrees:"
+  git -C "$MAIN_REPO" worktree list
+}
+
+cmd_finish() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then echo "Usage: agent-worktree finish <name>" >&2; exit 1; fi
+  local branch="agent/$name" dir="$AGENTS_DIR/$name"
+
+  if [ ! -d "$dir" ]; then echo "No worktree at $dir" >&2; exit 1; fi
+
+  local dirty
+  dirty="$(git -C "$dir" status --porcelain | wc -l)"
+  if [ "$dirty" -ne 0 ]; then
+    echo "REFUSING: $dir has $dirty uncommitted path(s)." >&2
+    echo "That work exists nowhere else. Commit it in that worktree first." >&2
+    git -C "$dir" status --short >&2
+    exit 1
+  fi
+
+  echo "Commits on $branch not in the branch you are standing on:"
+  git -C "$MAIN_REPO" log --oneline "$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)".."$branch" || true
+  cat <<EOF
+
+Merge it yourself, from the tree that should receive it:
+  git merge --no-ff $branch
+
+Then remove the worktree (the branch is kept until you delete it):
+  git -C "$MAIN_REPO" worktree remove "$dir"
+  git -C "$MAIN_REPO" branch -d $branch
+
+Not done automatically on purpose: a merge into a shared, deliberately dirty
+working tree is a decision, not a cleanup step.
+EOF
+}
+
+case "${1:-}" in
+  new)    shift; cmd_new "$@" ;;
+  list)   shift; cmd_list "$@" ;;
+  finish) shift; cmd_finish "$@" ;;
+  *)      usage ;;
+esac

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="harness.css" />
+<style>
+/* ---- layout A -------------------------------------------------------
+   Everything below is throwaway: delete it and draw the real screen.
+   The only contract with the harness is at the bottom of the script —
+   Mockup.boot({ variant, scenes }).
+   -------------------------------------------------------------------- */
+
+.sc { width: min(760px, 100%); margin: 0 auto; padding: 7vh 28px 120px; }
+
+.sc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; margin-bottom: 6px; }
+.sc-title { margin: 0; font-size: 1.6rem; font-weight: 620; letter-spacing: -0.01em; }
+.sc-clock { font-family: var(--mono); font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.sc-crumb { margin: 0 0 28px; color: var(--text-muted); font-size: 0.85rem; }
+
+.sc-list { list-style: none; margin: 0 0 24px; padding: 0; display: grid; gap: 8px; }
+.sc-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--card);
+  cursor: pointer;
+}
+.sc-item .box {
+  flex: none; width: 17px; height: 17px; border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  display: grid; place-items: center;
+  font-size: 0.72rem; color: var(--text-muted);
+}
+.sc-item[data-state="checked"] .box { background: var(--good); border-color: var(--good); color: #10241b; }
+.sc-item[data-state="checked"] .box::after { content: "✓"; }
+.sc-item[data-state="x"] .box::after { content: "×"; }
+.sc-item[data-state="x"] span { color: var(--text-muted); text-decoration: line-through; }
+
+.sc-write {
+  width: 100%; min-height: 190px; resize: vertical;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--card);
+  color: var(--text-primary);
+  font: inherit; line-height: 1.6;
+}
+.sc-write:focus { outline: none; border-color: rgba(74, 158, 255, 0.5); }
+
+.sc-foot { display: flex; align-items: center; gap: 16px; margin-top: 16px; }
+.sc-count { font-family: var(--mono); font-size: 0.82rem; color: var(--text-secondary); }
+.sc-count.is-met { color: var(--good); }
+.sc-next {
+  margin-left: auto;
+  padding: 10px 20px; border-radius: 999px;
+  border: 1px solid rgba(74, 158, 255, 0.5);
+  background: rgba(74, 158, 255, 0.16);
+  color: var(--text-primary); font: inherit; cursor: pointer;
+}
+.sc-next:disabled { opacity: 0.4; cursor: not-allowed; border-color: var(--border-strong); background: transparent; }
+
+.sc-empty { padding: 44px 0; text-align: center; color: var(--text-muted); }
+.sc-empty[hidden] { display: none; }
+
+/* A warning that goes invisible cannot be read. Bottom out at 35%. */
+@keyframes sc-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.is-blinking { animation: sc-blink 900ms ease-in-out infinite; color: var(--bad); }
+</style>
+</head>
+<body>
+
+<main class="sc">
+  <div class="sc-head">
+    <h1 class="sc-title" id="title">Screen title</h1>
+    <div class="sc-clock" id="clock">5:00</div>
+  </div>
+  <p class="sc-crumb" id="crumb">where this sits · what it belongs to</p>
+
+  <ul class="sc-list" id="items">
+    <li class="sc-item" data-state="x"><span class="box"></span><span>First thing that was on the list</span></li>
+    <li class="sc-item" data-state="x"><span class="box"></span><span>Second thing that was on the list</span></li>
+    <li class="sc-item" data-state="x"><span class="box"></span><span>Third thing that was on the list</span></li>
+  </ul>
+
+  <p class="sc-empty" id="empty" hidden>Nothing here yet.</p>
+
+  <textarea class="sc-write" id="write" placeholder="Write here…"></textarea>
+
+  <div class="sc-foot">
+    <span class="sc-count" id="count">0 / 20 words</span>
+    <button class="sc-next" id="next" disabled>Next</button>
+  </div>
+</main>
+
+<script src="mockups.config.js"></script>
+<script src="harness.js"></script>
+<script>
+/* ---- mock API -------------------------------------------------------
+   One small verb per thing a scene can change. Scenes stay readable and
+   two variants can share the same vocabulary.
+   -------------------------------------------------------------------- */
+const mock = {
+  clock(text, blink = false) {
+    const el = document.getElementById('clock');
+    el.textContent = text;
+    el.classList.toggle('is-blinking', blink);
+  },
+  words(n, target = 20) {
+    const el = document.getElementById('count');
+    el.textContent = `${n} / ${target} words`;
+    el.classList.toggle('is-met', n >= target);
+    el.classList.toggle('is-blinking', n < target && n > 0 && mock._warn === true);
+  },
+  warn(on) { mock._warn = on; },
+  text(s) { document.getElementById('write').value = s; },
+  item(i, state) { const el = document.querySelectorAll('.sc-item')[i]; if (el) el.dataset.state = state; },
+  ready(on = true) { document.getElementById('next').disabled = !on; },
+  empty(on) {
+    document.getElementById('items').hidden = on;
+    document.getElementById('empty').hidden = !on;
+  },
+};
+
+/* ---- scenes ---------------------------------------------------------
+   Each one starts from the markup above — never from another scene's
+   leftovers, because switching scenes reloads the page.
+   -------------------------------------------------------------------- */
+const SCENES = {
+  fresh() {},
+
+  working() {
+    mock.clock('3:04');
+    mock.item(1, 'checked');
+    mock.text('Two of the four are gone. The third is photographed but not listed, '
+      + 'and that is the one that actually moves money.');
+    mock.words(24);
+    mock.ready(true);
+  },
+
+  warning() {
+    mock.clock('0:24', true);
+    mock.warn(true);
+    mock.text('Two of the four are gone.');
+    mock.words(6);
+  },
+
+  empty() {
+    mock.clock('5:00');
+    mock.empty(true);
+  },
+};
+
+// Clicking an item toggles it — the only interaction a mock owes you is the
+// one the reviewer will reach for anyway.
+document.getElementById('items').addEventListener('click', (e) => {
+  const item = e.target.closest('.sc-item');
+  if (item) item.dataset.state = item.dataset.state === 'checked' ? 'x' : 'checked';
+});
+
+Mockup.boot({ variant: 'a', scenes: SCENES });
+document.getElementById('write').focus({ preventScroll: true });
+</script>
+</body>
+</html>
