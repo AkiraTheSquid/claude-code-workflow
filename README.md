@@ -6,8 +6,13 @@ Claude Code. They're **ranked by measured impact**, not by how clever they are.
 Every number below comes from replaying my own Claude Code transcripts:
 - **6 weeks:** 2026-09-20 → 2026-11-01.
 - **268 sessions, 52,628 API calls.**
-- **$3,330 at API list price**, about $2,400/month. On a Max plan that's
-  usage-limit headroom, not cash.
+- **Usage worth $3,330 at API list price** (about $2,400/month), a heavy
+  Max-plan workload.
+
+Most people pay for a subscription, not per token, so every saving below is
+shown as a **share of your plan's usage**: how much less of your usage limit the
+same work burns. Cutting usage by a third means about 1.5× as much work fits
+before you hit the limit.
 
 The replay script is in [`tools/measure.py`](tools/measure.py), so you can run it
 on your own history (method and limits at the bottom).
@@ -18,20 +23,43 @@ for you to merge.
 
 ## The ranking
 
-| # | Tool | Measured effect over 6 weeks | Kind of win |
-|---|---|---|---|
-| 1 | **Lower auto-compact window** (300k instead of ~1M) | **−$1,165** (24% of what stock would cost). Turns over 200k context: **24% instead of 50%** | money + quality |
-| 2 | **CLIs + MCP for every website** | **2,060 actions** the agent ran itself, ~50/day | speed |
-| 3 | **collab: parallel sessions** | **1.37× throughput**, 64 h of wall-clock saved; 2+ sessions running 28% of the time | speed |
-| 4 | **Automatic critic** (Codex reviews every diff) | **535 reviews**, about 1 high-severity finding per review | quality |
-| 5 | **Cache protection** (1-hour TTL + cache guard) | **−$300** (−$178 TTL, −$121 guard) | money |
-| 6 | **Caveman** (terse output) | **−$60 to −$180** | money + reading time |
-| 7 | **graphify** (codebase knowledge graph) | exploration is 8.5% of the bill; a further **−$57 to −$128** possible | money + speed |
-| 8 | **`@` file picker** | 74 prompts with file references (installed late October) | speed |
+| # | Tool | Plan usage saved | Kind of win | Price |
+|---|---|---|---|---|
+| 1 | **Lower auto-compact window** (300k instead of ~1M) | **~24%**. Turns over 200k context: 24% instead of 50% | usage + some quality | **each agent is slower** |
+| 2 | **CLIs + MCP for every website** | none. **2,060 actions** the agent ran itself instead of you, ~50/day | speed | — |
+| 3 | **collab: parallel sessions** | none per task. **1.37× throughput**, 64 h of wall-clock saved | speed | burns your plan 1.37× faster per hour; overwhelming at 4–5 agents |
+| 4 | **Automatic critic** (Codex reviews every diff) | ~0% of your Claude plan (runs on a ChatGPT/Codex plan). **536 reviews**, about 1 high-severity finding each | quality | **tasks take ~2× as long** |
+| 5 | **Cache protection** (1-hour TTL + cache guard) | **~6%** (3.6% TTL, 2.5% guard) | usage | — |
+| 6 | **Caveman** (terse output) | **1–4%** | usage + reading time | — |
+| 7 | **graphify** (codebase knowledge graph) | **2–4%** more possible; barely used yet | usage + speed | — |
+| 8 | **`@` file picker** | too new to measure (74 prompts since late October) | speed | — |
 
-**Total: about 31–33% cheaper than stock Claude Code**, i.e. ~$1,100–1,190 a month
-at list price. On top of that come the speed and quality wins, which don't show
-up in a bill. Details for each are below, in the same order.
+**Total: 31–33% less plan usage than stock Claude Code, so about 1.5× as much
+work fits in the same subscription.** On top of that come the speed and quality
+wins, which don't show up in usage at all. Details for each are below, in the
+same order.
+
+How the shares are computed: each saving ÷ what stock Claude Code would have
+used for the same work. That assumes your plan counts tokens with the same
+weights as API prices (cache reads cheap; cache writes and output expensive).
+Anthropic doesn't publish the formula. If your plan counts cache reads as even
+cheaper, item 1 shrinks and item 5 matters more.
+
+### Two of these make each agent slower, and that's fine
+
+The compact window and the critic both make a single agent **take longer**:
+- **Compaction:** it pauses to summarise, then re-reads files it no longer
+  remembers.
+- **Critic:** every diff waits for a second model's review and a round of fixes.
+
+In return each agent finishes **cheaper** (compaction) and **better** (critic).
+On a single agent, that's a real trade.
+
+**With collab it mostly stops being one.** You're running several agents in
+split terminal panes anyway (item 3). While one agent compacts or waits on its
+critic, you're reviewing another. A longer gap before you return to an agent
+costs you nothing, and when you do look, the result is better and was cheaper
+to produce.
 
 ---
 
@@ -52,7 +80,20 @@ happened. My 305 manual `/compact`s were kept, since those happen either way.
   - ~$55 is sessions resumed after a long break, which would have had to
     rewrite that larger context.
 - **Minus the compactions themselves:** they cost ~$121.
-- **Net: −$1,165**, the single biggest lever in this repo.
+- **Net: −$1,165, about 24% of the usage stock Claude Code would burn.**
+  It's the single biggest lever in this repo.
+
+**Trade-off: slower agents.**
+- **Compaction pauses:** 273 auto-compactions at ~67 s each = **5.1 hours**
+  waiting on summaries, plus 3.8 hours on manual `/compact`s.
+- **Re-reading afterwards:** after each summary the agent has to rediscover
+  files and decisions it dropped. That's not measured here, but it's the larger
+  part of the slowdown.
+- **Quality:** the gain is moderate. A tighter context keeps the agent sharper,
+  but every summary loses some detail.
+
+Net: cheaper and somewhat better per task, but each task takes noticeably
+longer. See the box above for why that's fine with parallel agents.
 
 **Set up:** `"autoCompactWindow": 300000` in `~/.claude/settings.json`, or use the
 command:
@@ -106,19 +147,65 @@ enforce it:
   **1.37× throughput, 64 hours saved**.
 - Two or more sessions were working 28% of the time.
 - The agents ran `collab` 5,074 times.
+- **Plan usage:** the same per task, but spent 1.37× faster per hour. Parallel
+  sessions get you to your usage limit sooner in the day; they don't make the
+  work cheaper.
 
-**Why by hand instead of an orchestrator agent:**
-- **Overhead per spawn:** every spawned agent starts cold and pays the full
-  session floor. My 174 subagents averaged **52k tokens of context before doing
-  anything**.
-- **Re-reading:** the orchestrator re-reads every worker's report on each of its
-  own turns.
-- **Lossy hand-offs:** results come back as summaries, so detail gets lost.
+**How I run it:** one agent per split pane in the terminal, each on an
+independent task.
 
-In my data the dollar amount is modest (all subagents together cost $56). The
-real wins are control and speed. I start a second session only for work that
-really is independent, I read each one's results first-hand, and each session
-keeps its own warm cache and a focused context.
+**The ceiling is you, at about 4–5 agents.** Past that you lose track of which
+agent is doing what, and reviewing every diff becomes impossible. What works at
+that point:
+
+1. **Integrate in one place.** Pick one agent and have it commit everyone's
+   finished changes and deploy them. It's one commit and deploy pass instead of
+   five racing each other.
+2. **Check the running app, not the diffs.** Don't dig through each agent's code
+   changes. Open the app and look at every change taking effect. You can see
+   right away which tasks are finished, and which half-landed or need another
+   pass to clean them up the way you want.
+3. **Send each unfinished one back** to the agent that owns it.
+
+**Where parallel agents lower quality.** collab stops the mechanical collisions.
+Over 6 weeks it refused:
+- **32 edits** to a file another live agent owned;
+- **16 sweeping commits** (`git add -A` / `git stash`) that would have swept up
+  another agent's work;
+- **8 deploys** while another agent's tree was half-built.
+
+It also made agents check in 133 times when a new agent joined their repo.
+
+What it **can't** see is a semantic conflict:
+- **Same behaviour, different files:** two agents change the same behaviour from
+  different files, and the second quietly undoes the first.
+- **Mistaken clean-up:** an agent "cleans up" something another agent did on
+  purpose.
+- **Shipping half-done work:** a deploy ships one agent's finished change
+  alongside another's half-done one.
+
+Those show up as features that worked an hour ago. Step 2 above (look at the
+running app) is how you catch them.
+
+**Why not an orchestrator agent instead?** An orchestrator (one lead agent
+spawning workers) is probably **more capable**. Anthropic's multi-agent research
+system beat a single Claude Opus 4 agent by **90.2%** on its internal research
+eval. It also replaces your own oversight time, which is usually the most
+expensive thing in the loop. But it costs far more:
+- **Usage:** multi-agent runs used about **15× the tokens of a chat**, against
+  about 4× for a single agent. That's roughly **4× the plan usage per task**.
+- **Not a great fit for code:** Anthropic notes that most coding tasks have
+  fewer truly parallel pieces than research. It also says agents "are not yet
+  great at coordinating and delegating to other agents in real time"
+  ([source](https://www.anthropic.com/engineering/built-multi-agent-research-system)).
+- **In practice it was too expensive for me.** Every spawned agent pays the full
+  session floor before doing anything: my subagents averaged **52k tokens** of
+  context first. One fan-out burned ~1.5M tokens on work a single session could
+  have done.
+
+Running sessions by hand with collab keeps the parallelism and drops the
+orchestration bill. You pay with your attention instead, which is why the
+4–5-agent ceiling matters.
 
 **Set up:** `install.sh` puts `collab` on PATH and wires the hook globally.
 Protocol: [`collab/COLLAB.md`](collab/COLLAB.md).
@@ -133,11 +220,42 @@ unprompted:
 - before saying a bug is fixed;
 - before every commit or deploy.
 
-**Measured:** 535 critic runs in 6 weeks, about 13 a day. The 113 reviews kept on
+**Measured:** 536 critic runs in 6 weeks, about 13 a day. The 113 reviews kept on
 disk contain **116 high-, 320 medium- and 150 low-severity findings**. Claude
 verifies each one before acting, and not every finding is real, but that's about
-one serious issue per review caught before it shipped. It costs one Codex call per
-diff on an OpenAI/ChatGPT plan, not Anthropic tokens.
+one serious issue per review caught before it shipped. The review runs on a
+ChatGPT/Codex plan, so it uses ~0% of your Claude plan. Claude's own turns
+reconciling the findings do cost a little; that isn't measured here.
+
+**Trade-off: it roughly doubles how long a task takes.**
+- **Waiting on Codex:** 536 runs added **10.9 hours** of pure waiting. That's a
+  lower bound, since background runs aren't counted.
+- **The loop around it:** the bigger cost is reconciling the findings, fixing,
+  and re-verifying. In practice a task with the critic takes **about twice as
+  long** as without it. That 2× is my experience, not a measurement.
+- **What you get back is quality.** With parallel panes (item 3), the extra time
+  is mostly time you spend on other agents anyway.
+
+**What the research says:**
+- **Two different models catch more than two passes of one.** One same-model
+  review plus one cross-model review caught **56.7%** of planted errors, against
+  **42.7%** for two same-model reviews. The two kinds of reviewer find partly
+  different errors (41% overlap)
+  ([Song, 2026](https://arxiv.org/abs/2610.01471)).
+- **Direction matters, and blind fixes can make code worse.** On 116
+  LiveCodeBench tasks:
+
+  | Reviewer → author | Pass rate before → after review |
+  |---|---|
+  | Claude reviewing Codex | **71.6% → 89.7%** |
+  | Codex reviewing itself | 71.6% → 84.5% |
+  | Codex reviewing Claude | **91.4% → 82.8%** (worse) |
+
+  ([Xiang et al., 2026](https://arxiv.org/abs/2607.21656)). Codex reviewing
+  Claude's code is exactly this setup. That's why Codex never edits here: Claude
+  has to **verify each finding against the
+  code before acting**, and disputed findings are reported, not applied. A
+  critic whose findings are relayed blindly can lower quality.
 
 **Set up:** `npm install -g @openai/codex && codex login`. The runner lives in
 [Modulario](https://github.com/AkiraTheSquid/Modulario), which `install.sh` clones.
@@ -158,7 +276,7 @@ whose reads are 0.025×).
 - **1-hour TTL** (`"promptCacheTtl": "1h"`). The default cache dies after 5
   minutes. **839 of my turns came after a 5–60 minute pause.** Under the default,
   each would have rewritten the whole context.
-  **Measured: −$178.**
+  **Measured: −$178, about 3.6% of plan usage.**
 - **Cache guard** (`scripts/cache_guard.py`, a UserPromptSubmit hook). It
   **blocks** a prompt when the cache is cold and the rebuild would be ≥60k tokens,
   copies your prompt to the clipboard, and tells you the cost. You then choose:
@@ -166,7 +284,7 @@ whose reads are 0.025×).
   - **156 blocks across 142 cold episodes** (re-prompting while blocked counts
     once): I compacted 43 times, cleared or abandoned 83, and re-sent 16 anyway.
   - Only 9 large cold rebuilds were actually paid all period.
-  - **Measured: −$121.**
+  - **Measured: −$121, about 2.5% of plan usage.**
   - The statusline shows the cache live: `cache: warm 42m left · hit 97%`.
 
 **Set up:** installed by `install.sh`. Thresholds are in
@@ -183,7 +301,8 @@ session.
 tool calls (code, edits, commands) are the rest. With caveman on, my prose cost
 $45 to generate plus $15 to re-read on later turns. Without caveman it would be
 2–4× longer, depending on whether you trust a 50% reduction or caveman's own 75%.
-**Saving: −$60 to −$180.** The bigger benefit is answers that are faster to read.
+**Saving: −$60 to −$180, 1–4% of plan usage.** The bigger benefit is answers
+that are faster to read.
 
 ## 7. graphify: a knowledge graph of each codebase
 
@@ -195,7 +314,7 @@ when one exists. A post-commit hook keeps it current.
 **Measured:**
 - **Exploration volume:** 18,084 exploration calls (Read, Grep, Glob, `grep`,
   `find`, …) added 15.9M tokens to context.
-- **Exploration cost:** **$284 (8.5% of the bill)**, counting the write plus
+- **Exploration cost:** **$284, 8.5% of my plan usage**, counting the write plus
   re-reads on later turns.
 - **Graph use so far:** the agents ran only 24 graph queries (`query` / `path` / `explain`).
 
@@ -203,8 +322,8 @@ graphify's headline is "71.5× fewer tokens", but that comes from a 52-file mixe
 corpus. Independent tests on real code find 5–10× fewer tokens on orientation
 queries in repos with hundreds of files, and ~1–3× under 100 files. If a quarter
 to a half of my exploration were orientation queries cut by 80–90%: **−$57 to
-−$128 more**. That's real but small next to items 1–5, and it's lowest when you
-already point the agent at exact files (item 8).
+−$128 more, 2–4% of what I use now**. That's real but small next to items 1–5,
+and it's lowest when you already point the agent at exact files (item 8).
 
 ## 8. A better `@` file picker
 
@@ -217,7 +336,7 @@ already point the agent at exact files (item 8).
 
 **Measured:** 74 prompts carried `@` path references, and the picker only arrived
 in late October. Pointing the agent at the exact file skips its search turns and
-makes cross-repo references instant. Too new to put a dollar figure on.
+makes cross-repo references instant. Too new to measure its share of usage.
 
 **Needs:** `rg`, `fzf`, `jq`.
 
@@ -244,6 +363,10 @@ makes cross-repo references instant. Too new to put a dollar figure on.
 - **Caveman:** prose tokens = non-thinking output × the prose share of that
   message. The counterfactual is 2× and 4× the prose, plus its re-reads until the
   next compaction.
+- **Plan share:** each saving ÷ stock usage, i.e. actual ($3,330) plus all
+  measured savings ($4,855–4,975). graphify's not-yet-realised saving is ÷
+  current usage instead. Assumes plan limits weight tokens like API
+  prices; Anthropic doesn't publish the formula.
 - **Parallelism:** a session is "active" while its turns are under 5 minutes
   apart. Throughput = sum of active time ÷ union of active time across sessions.
 

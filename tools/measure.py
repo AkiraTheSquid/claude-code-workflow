@@ -65,7 +65,7 @@ def load(path):
                 tool = sum(len(json.dumps(c.get("input", {}))) for c in content if isinstance(c, dict) and c.get("type") == "tool_use")
                 for c in content:
                     if isinstance(c, dict) and c.get("type") == "tool_use":
-                        tool_names[c.get("id")] = (c.get("name"), c.get("input") or {})
+                        tool_names[c.get("id")] = (c.get("name"), c.get("input") or {}, ts(d["timestamp"]))
                 if mid in seen:      # one API response is split over several lines
                     rec = seen[mid]
                     rec["text"] += text
@@ -89,6 +89,7 @@ def load(path):
             elif t == "system" and d.get("subtype") == "compact_boundary":
                 m = d.get("compactMetadata") or {}
                 events.append({"kind": "compact", "t": ts(d["timestamp"]), "trigger": m.get("trigger"),
+                               "secs": (m.get("durationMs") or 0) / 1000,
                                "pre": m.get("preTokens", 0) or 0, "post": m.get("postTokens", 0) or 0})
             elif t == "system" and d.get("subtype") == "informational" and "cache_guard" in str(d.get("content", "")):
                 c = str(d.get("content"))
@@ -107,9 +108,12 @@ def load(path):
                                 n = len(body)
                             else:
                                 n = sum(len(b.get("text", "")) for b in (body or []) if isinstance(b, dict) and b.get("type") == "text")
-                            name, tin = tool_names.get(c.get("tool_use_id"), (None, {}))
+                            name, tin, t0 = tool_names.get(c.get("tool_use_id"), (None, {}, None))
+                            raw = body if isinstance(body, str) else " ".join(
+                                b.get("text", "") for b in (body or []) if isinstance(b, dict))
                             events.append({"kind": "result", "t": ts(d["timestamp"]), "name": name,
-                                           "input": tin, "chars": n})
+                                           "input": tin, "chars": n, "t0": t0,
+                                           "collab": raw[:2000] if "collab: " in raw[:2000] else ""})
     events.sort(key=lambda e: e["t"])
     return events
 
@@ -189,6 +193,7 @@ for path in files + sub_files:
         k = e["kind"]
         if k == "compact":
             C["compact_" + str(e["trigger"])] += 1
+            R["compact_seconds_" + str(e["trigger"])] += e.get("secs", 0)
             if e["trigger"] == "auto":
                 # stock setup would not have compacted here (unless it was past ~967k)
                 if e["pre"] < DEFAULT_WINDOW_FIRE:
@@ -238,6 +243,17 @@ for path in files + sub_files:
                 C["mcp:" + name.split("__")[1]] += 1
             if name == "Bash" and re.search(r"(^|[;&|]\s*|timeout \d+ )\S*critic\.sh\b", cmd or ""):
                 C["critic_runs"] += 1
+                if e["t0"]:
+                    R["critic_seconds"] += max(0.0, e["t"] - e["t0"])
+            msg = e["collab"]
+            if msg:
+                for key, pat in (("collab_refused_owned", " is owned by agent "),
+                                 ("collab_refused_intent", "before changing anything"),
+                                 ("collab_refused_joined", "a new agent joined"),
+                                 ("collab_refused_deploy_hold", "another agent has a deploy hold"),
+                                 ("collab_refused_git", "collab: refused in ")):
+                    if pat in msg:
+                        C[key] += 1
             continue
         if k != "turn" or e["side"]:
             continue
