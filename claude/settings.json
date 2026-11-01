@@ -12,7 +12,6 @@
   },
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "$HOME/.claude/scripts/caveman-ultra.sh" } ] },
       { "hooks": [ { "type": "command", "command": "$HOME/.claude/scripts/graphify-startup.sh" } ] }
     ],
     "UserPromptSubmit": [

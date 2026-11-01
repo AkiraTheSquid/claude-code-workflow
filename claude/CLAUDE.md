@@ -34,7 +34,6 @@ against your own (agreed / codex-only / you-only / disputed); don't relay blindl
 
 ## Context hygiene
 
-- Caveman mode is on by default: compressed prose, normal code/commits/security text.
 - `/clear` between unrelated tasks. Don't switch model mid-session (rebuilds the cache).
 - When `graphify-out/` exists, answer codebase-structure questions with
   `graphify query` before grepping.

@@ -37,26 +37,25 @@ positive quality and speed are good. Every cell says where its number comes from
 | 3 | **collab: parallel sessions** | 0% per task M | −5% E | **+37%** M | Drains your plan 1.37× faster per hour; you become the bottleneck at 4–5 agents; conflicts between agents' changes slip through |
 | 4 | **Automatic critic** (Codex reviews every diff) | +10% M (upper bound) | **+33%** L | **−14%** M | Tasks it runs on take **1.84×** as long M; applying Codex's fixes blindly made Claude's code worse in one benchmark |
 | 5 | **Cache protection** (1-hour TTL + cache guard) | **−6%** M | 0% | 0% E | The guard blocks your prompt after >1 h idle (156 times) until you pick `/clear`, `/compact` or resend |
-| 6 | **Caveman** (terse output) | −1 to −4% M | −2% E | +2% E | Terse answers can skip the "why"; harder to follow on unfamiliar topics |
-| 7 | **graphify** (codebase knowledge graph) | −2 to −4% E, if used | 0% E | + E | A stale graph misleads; one more hook to break. Barely used yet, so it's left out of the total |
-| | **Combined** | **≈ −25%** (≈1.33× as much work per plan) | **≈ +35%** E | **≈ +26 to +35%** | |
+| 6 | **graphify** (codebase knowledge graph) | −2 to −4% E, if used | 0% E | + E | A stale graph misleads; one more hook to break. Barely used yet, so it's left out of the total |
+| | **Combined** | **≈ −24%** (≈1.3× as much work per plan) | **≈ +35 to +40%** E | **≈ +23 to +31%** | |
 
 **How the combined row is computed.** It multiplies each column's factors
 (e.g. 0.76 × 0.94 × …), adjusted where two tools clearly aren't independent:
 - **Usage:**
-  - The compact window, cache and caveman compound: a bigger context under a
-    5-minute cache costs more than either alone. So I add their shares (−32.5%)
-    rather than multiply them (−30%).
-  - Then ×1.10 for the critic's extra Claude turns: **−25%** (−24% to −26%).
-  - With graphify in daily use, roughly −27%.
+  - The compact window and the cache compound: a bigger context under a
+    5-minute cache costs more than either alone. So I add their shares (−30.5%)
+    rather than multiply them (−29%).
+  - Then ×1.10 for the critic's extra Claude turns: **−24%**.
+  - With graphify in daily use, roughly −26%.
 - **Speed:**
-  - Straight multiplication gives **+26%**.
+  - Straight multiplication gives **+23%**.
   - collab's 1.37× was measured with the critic and compaction already on, and
     their slow stretches are when you switch to another pane. So part of their
     cost is already hidden inside the 1.37×, and the true figure is likely
-    higher. My estimate is up to **+35%**.
+    higher. My estimate is up to **+31%**.
 - **Quality:**
-  - Multiplying gives +37%, but the columns mix different measures, so treat it
+  - Multiplying gives +39%, but the columns mix different measures, so treat it
     as rough. The critic dominates it.
   - The critic also catches some conflicts between agents, so collab's −5% is
     probably smaller.
@@ -68,6 +67,14 @@ they held 7× different amounts of Claude Code usage under every weighting I
 tried. Usage from claude.ai chat and other devices counts against the same limit
 and isn't in the transcripts. If your plan counts cache reads as even cheaper,
 item 1 shrinks and item 5 matters more.
+
+**Tried and dropped: caveman** (terse-output plugin, "~75% fewer tokens").
+- **Small ceiling:** that 75% applies only to prose, which is ~6% of my output
+  tokens. Output is ~22% of usage. So even full compliance saves 1–4%.
+- **Not followed:** the agent ignored it in practice. Its replies averaged
+  **8.4 articles ("the/a/an") per 100 words**, which is ordinary English;
+  caveman text should be near zero.
+- **Measured saving:** ≈0%, and compressed answers are harder to read.
 
 Details for each tool are below, in the same order.
 
@@ -321,21 +328,7 @@ whose reads are 0.025×).
 **Set up:** installed by `install.sh`. Thresholds are in
 `~/.config/claude-cache-guard.env`.
 
-## 6. Caveman: terse output
-
-[caveman](https://github.com/JuliusBrussee/caveman) makes the agent answer in
-compressed fragments, while code, commits and security text stay normal. A
-SessionStart hook (`scripts/caveman-ultra.sh`) forces the strongest level every
-session.
-
-**Measured:** prose is only **6% of my output tokens**. Thinking is 31%, and
-tool calls (code, edits, commands) are the rest. With caveman on, my prose cost
-$45 to generate plus $15 to re-read on later turns. Without caveman it would be
-2–4× longer, depending on whether you trust a 50% reduction or caveman's own 75%.
-**Saving: −$60 to −$180, 1–4% of plan usage.** The bigger benefit is answers
-that are faster to read.
-
-## 7. graphify: a knowledge graph of each codebase
+## 6. graphify: a knowledge graph of each codebase
 
 [graphify](https://github.com/Graphify-Labs/graphify) builds a graph of a repo, so
 "where is X / what calls Y" becomes a `graphify query` instead of grep-and-read.
@@ -376,11 +369,8 @@ and it's lowest when you already point the agent at exact files.
   - Compacted: saves 2× − 1.25× of the blocked context.
   - Cleared or abandoned: saves the full 2× rewrite.
   - Re-sent: saves nothing.
-- **Caveman:** prose tokens = non-thinking output × the prose share of that
-  message. The counterfactual is 2× and 4× the prose, plus its re-reads until the
-  next compaction.
 - **Plan share:** each saving ÷ stock usage, i.e. actual ($3,330) plus all
-  measured savings ($4,855–4,975). graphify's not-yet-realised saving is ÷
+  measured savings ($4,794). graphify's not-yet-realised saving is ÷
   current usage instead. Assumes plan limits weight tokens like API
   prices; Anthropic doesn't publish the formula.
 - **Parallelism:** a session is "active" while its turns are under 5 minutes
@@ -412,7 +402,6 @@ claude/settings.json             hooks + autoCompactWindow + promptCacheTtl + fi
 claude/statusline.sh             model · cost · ctx %, plus the live cache line
 claude/file-suggestion.sh        the @ picker (+ file-suggestion-aliases.example)
 claude/scripts/cache_*.py        cache guard, statusline cache line, optional pre-expiry nudge
-claude/scripts/caveman-ultra.sh  forces caveman ultra at SessionStart
 claude/scripts/compact_limit.py  + commands/compact-limit.md
 claude/scripts/graphify-startup.sh
 claude/skills/critic/            /critic skill

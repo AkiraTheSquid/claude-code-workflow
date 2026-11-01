@@ -154,13 +154,10 @@ cat <<EOF
 Done. Remaining steps (README has the why for each):
   1. CLIs, if missing:  gh auth login · npm i -g vercel && vercel login ·
      supabase login   (plus any MCP connectors for the sites you use)
-  2. caveman plugin, inside Claude Code:
-       /plugin marketplace add JuliusBrussee/caveman
-       /plugin install caveman@caveman
-  3. Codex for /critic:  npm install -g @openai/codex && codex login
-  4. graphify:  uv tool install graphifyy && graphify install
+  2. Codex for /critic:  npm install -g @openai/codex && codex login
+  3. graphify:  uv tool install graphifyy && graphify install
      then in each big repo:  /graphify .
-  5. Edit ~/.claude/file-suggestion-aliases with your own project folders.
-  6. Make sure $BIN_DIR is on your PATH, then start a NEW Claude session
+  4. Edit ~/.claude/file-suggestion-aliases with your own project folders.
+  5. Make sure $BIN_DIR is on your PATH, then start a NEW Claude session
      (hooks load at session start).
 EOF
