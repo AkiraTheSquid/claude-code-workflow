@@ -30,15 +30,15 @@ positive quality and speed are good. Every cell says where its number comes from
 - **Quality:** defects caught before they reach you.
 - **Speed:** work finished per wall-clock hour, across all my work.
 
-| # | Tool | Plan usage | Quality | Speed | Downside |
-|---|---|---|---|---|---|
-| 1 | **Lower auto-compact window** (300k instead of ~1M) | **−24%** M | +5% E | −5% E (pauses alone −2% M) | Each summary drops detail and the agent re-reads files; 273 pauses of ~67 s |
-| 2 | **CLIs + MCP for every website** | 0% E | +5% E | +10% E | The agent can deploy and write to production itself; a wrong command hits real systems |
-| 3 | **collab: parallel sessions** | 0% per task M | −5% E | **+37%** M | Drains your plan 1.37× faster per hour; you become the bottleneck at 4–5 agents; conflicts between agents' changes slip through |
-| 4 | **Automatic critic** (Codex reviews every diff) | +10% M (upper bound) | **+33%** L | **−14%** M | Tasks it runs on take **1.84×** as long M; applying Codex's fixes blindly made Claude's code worse in one benchmark |
-| 5 | **Cache protection** (1-hour TTL + cache guard) | **−9%** M (TTL 3.6%, guard 5.1%) | 0% | 0% E | The guard blocks your prompt after >1 h idle (156 times) until you pick `/clear`, `/compact` or resend |
-| 6 | **graphify** (codebase knowledge graph) | −2 to −4% E, if used | 0% E | + E | A stale graph misleads; one more hook to break. Barely used yet, so it's left out of the total |
-| | **Combined** | **≈ −26%** (≈1.35× as much work per plan) | **≈ +35 to +40%** E | **≈ +23 to +31%** | |
+| # | Tool | Plan usage | Quality | Speed |
+|---|---|---|---|---|
+| 1 | **Lower auto-compact window** (300k instead of ~1M) | **−24%** M | +5% E | −5% E (pauses alone −2% M) |
+| 2 | **CLIs + MCP for every website** | 0% E | +5% E | +10% E |
+| 3 | **collab: parallel sessions** | 0% per task M | −5% E | **+37%** M |
+| 4 | **Automatic critic** (Codex reviews every diff) | +10% M (upper bound) | **+33%** L | **−14%** M |
+| 5 | **Cache protection** (1-hour TTL + cache guard) | **−9%** M (TTL 3.6%, guard 5.1%) | 0% | 0% E |
+| 6 | **graphify** (codebase knowledge graph) | −2 to −4% E, if used | 0% E | + E |
+| | **Combined** | **≈ −26%** (≈1.35× as much work per plan) | **≈ +35 to +40%** E | **≈ +23 to +31%** |
 
 **How the combined row is computed.** It multiplies each column's factors
 (e.g. 0.76 × 0.94 × …), adjusted where two tools clearly aren't independent:
@@ -156,6 +156,8 @@ round trip through you: open the dashboard, copy, paste, explain.
 If one in three of those saved me a 1–2 minute manual trip, that's **11–23 hours**
 (an estimate, not a measurement). The bigger effect is that "deploy, read the logs,
 fix it, redeploy" becomes one instruction instead of five messages.
+The catch: the agent can now deploy and write to production itself, so a wrong
+command hits real systems.
 
 **Set up:** install each CLI and log in once (`gh auth login`, `vercel login`,
 `supabase login`). The first rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) tells
