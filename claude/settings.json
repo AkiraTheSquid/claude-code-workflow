@@ -1,108 +1,22 @@
 {
-  "permissions": {
-    "defaultMode": "bypassPermissions"
-  },
-  "skipDangerousModePermissionPrompt": true,
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Write|Edit|Agent|Task|Workflow",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/hooks/pretooluse_guard.py"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Read|Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/scripts/loc_tracker_hook.py"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/scripts/cache_guard.py",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/scripts/caveman-ultra.sh"
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/scripts/graphify-startup.sh"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/scripts/token_stats_hook.py"
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/scripts/stop_notify.sh"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/scripts/token_stats_hook.py"
-          }
-        ]
-      }
-    ]
-  },
+  "promptCacheTtl": "1h",
+  "autoCompactWindow": 300000,
   "statusLine": {
     "type": "command",
-    "command": "$HOME/.claude/statusline.sh"
+    "command": "$HOME/.claude/statusline.sh",
+    "refreshInterval": 30
   },
-  "enabledPlugins": {
-    "frontend-design@claude-plugins-official": true,
-    "caveman@caveman": true,
-    "typesafe@typesafe-ai": true
+  "fileSuggestion": {
+    "type": "command",
+    "command": "$HOME/.claude/file-suggestion.sh"
   },
-  "extraKnownMarketplaces": {
-    "caveman": {
-      "source": {
-        "source": "github",
-        "repo": "JuliusBrussee/caveman"
-      }
-    },
-    "typesafe-ai": {
-      "source": {
-        "source": "github",
-        "repo": "typesafe-ai/skills"
-      }
-    }
-  },
-  "promptCacheTtl": "1h",
-  "effortLevel": "high",
-  "autoCompactWindow": 150000,
-  "spinnerTipsEnabled": false,
-  "prefersReducedMotion": true,
-  "preferredNotifChannel": "terminal_bell"
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "$HOME/.claude/scripts/caveman-ultra.sh" } ] },
+      { "hooks": [ { "type": "command", "command": "$HOME/.claude/scripts/graphify-startup.sh" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "python3 $HOME/.claude/scripts/cache_guard.py" } ] }
+    ]
+  }
 }

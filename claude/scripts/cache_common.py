@@ -19,7 +19,7 @@ TTL_SECONDS = 3600  # promptCacheTtl is 1h in ~/.claude/settings.json
 
 
 def load_config() -> dict[str, int]:
-    cfg = {"MIN_TOKENS": 60000, "NUDGE_MIN": 10, "AUTOCOMPACT": 0, "TELEGRAM": 1, "ACK_MIN": 15}
+    cfg = {"MIN_TOKENS": 60000, "NUDGE_MIN": 10, "AUTOCOMPACT": 0, "TELEGRAM": 1, "DESKTOP": 1, "ACK_MIN": 15}
     try:
         for raw in CONFIG.read_text().splitlines():
             line = raw.strip()
@@ -81,6 +81,36 @@ def transcript_last_turn(path: str | Path, tail_bytes: int = 1 << 20) -> tuple[f
             when = None
         return when, ctx
     return None, 0
+
+
+def compacted_since_last_turn(path: str | Path, tail_bytes: int = 1 << 20) -> bool:
+    """True when a /compact (compact_boundary) is newer than the last assistant response.
+    Compaction logs no assistant usage line, so without this check the guard still sees
+    the pre-compact context size and timestamp and blocks the cheap post-compact turn."""
+    try:
+        p = Path(path)
+        size = p.stat().st_size
+        with p.open("rb") as fh:
+            fh.seek(max(0, size - tail_bytes))
+            chunk = fh.read().decode("utf-8", "ignore")
+    except OSError:
+        return False
+    for line in reversed(chunk.splitlines()):
+        if '"compact_boundary"' in line:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if d.get("type") == "system" and d.get("subtype") == "compact_boundary":
+                return True
+        elif '"assistant"' in line and '"usage"' in line:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if d.get("type") == "assistant":
+                return False
+    return False
 
 
 def heartbeat_path(session_id: str) -> Path:

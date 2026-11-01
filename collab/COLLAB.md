@@ -1,80 +1,70 @@
-# Working alongside another agent
+# Working alongside other agents
 
-Read this if a session-start banner told you another agent is live in this repo.
+You do not need to have read this. The hooks enforce it, and every refusal tells
+you the exact command to run. This file is the why.
 
-You cannot see their context and they cannot see yours. Everything either of you
-learns that the other would otherwise rediscover goes in the shared log.
+You cannot see the other agents' context and they cannot see yours. Several
+sessions are usually live in Delta Note and Delta Drills at once.
 
-## The rules that are enforced
+## What the hooks do (all repos, automatically)
 
-A hook denies an `Edit`/`Write`/`NotebookEdit` to a file another **live** session
-owns. You will get a message naming the owner, their worktree, their branch and
-what they are doing. That is not a suggestion you can work around — pick a
-different file, or ask.
+Reads are never blocked. On a **state-changing** call — Edit/Write, a Bash
+command that writes, commits, installs, runs a script or deploys, or a
+state-changing Delta Note MCP tool — in a repo:
 
-    collab request <path> "<the change you need, and why>"
+1. **No intent yet → refused.** Say what you're about to do:
 
-Then keep working elsewhere. They apply it and `collab resolve` it. Asking costs
-you a minute; editing behind them costs both of you the merge.
+       collab intent "<one line: your task>" --files <files you expect to change>
 
-Ownership is taken **automatically** the first time you successfully edit a file.
-You do not have to remember to claim, and a protocol that depended on your
-remembering is exactly what this replaces.
+   That is your JOIN: it is logged, announced to every other agent in the repo,
+   claims the files, and prints who else is there and where you overlap.
+2. **Another agent joined since you last looked → refused** until you log how
+   your work overlaps theirs:
 
-## The rules that are not
+       collab ack "<overlap: none | which files/areas and how you'll split them>"
 
-These the hooks cannot check. They are still rules.
+3. **File owned by another live agent → refused**, Edit or Bash (`sed -i`, `>`,
+   `tee`, `cp`/`mv`/`rm`, `git add/checkout/restore <file>`). Ask instead:
 
-1. **Never `git stash`.** Sessions share a working tree. A stash takes the other
-   agent's in-flight work with it, and they will not know where it went.
-2. **Stage explicit paths.** Never `git add .` or `git add -A`. `git status` in
-   this repo is dirty on purpose — unrelated changes belong to whoever made them.
-3. **Never commit, revert, or clean the other agent's work**, even to make the
-   tree tidy for your own commit.
-4. **Do not deploy while the tree is dirty with someone else's work.** Delta
-   Drills' Colab deploy runs `git add -A && git push` in its worktree, and
-   `dn_deploy` in Delta Note publishes the WORKING TREE rather than a commit.
-   Either one, run at the wrong moment, ships a half-written feature. Deploy only
-   in a window where `git status` is clean, and say so in the log.
-5. **Release when you leave an area.** `collab release --all`. The session-end
-   hook does this for you, and the claim goes stale after 90 minutes regardless,
-   but neither helps the agent blocked right now.
+       collab request <path> "<the change you need and why>"
 
-## When to isolate instead
+4. **`git stash` → always refused** (Seth's rule). `git add -A`/`.`, `commit -a`,
+   `reset --hard`, `clean`, `checkout .`, and branch switches → refused while
+   another agent is active in the repo. Stage explicit paths; use
+   `agent-worktree new <name>` for a separate branch.
+5. **Deploy while another agent holds → refused.** Holding is how you say "my
+   work is half-done, don't ship the tree":
 
-Claims make two agents take turns on a file. That is right when the work barely
-overlaps and wrong when both features need the same three files — then turns are
-just a slower way to do it one at a time.
+       collab hold "<why a deploy now would break>"    /   collab hold --release
 
-    agent-worktree new <name> "what this agent is doing"
+Automatic, so you don't have to remember: files you write are claimed; commits
+and deploys are logged; other agents' new log lines are pushed into your
+context; after 25 quiet minutes you're nudged to log a milestone; at session end
+everything is released in every repo you touched.
 
-Gives the agent its own worktree on its own branch, as a sibling directory of the
-repo. Both work at full speed; the cost is paid once, at the merge, by whoever is
-orchestrating. That agent commits in its own worktree only and does not push,
-deploy, or stash.
-
-Delta Note learned this the hard way: two agents that both needed
-`focus_timer_view.js`, `js/do/README.md` and `js/do/watch.py` were split into
-worktrees precisely because the claims table had them queueing.
-
-## Commands
-
-    collab status               who is live, who owns what, requests for you
-    collab claim <path>...      take files ahead of editing them
-    collab release --all        hand everything back
-    collab request <p> "<w>"    ask the owner for a change
-    collab inbox                requests waiting on you
-    collab resolve <id> "done"  close one
-    collab log "<what and why>" append to the shared log
-    collab history              read it
-    agent-worktree new|list|finish
+Your session id comes from `CLAUDE_CODE_SESSION_ID` and your repo from your cwd,
+else the repo you last worked in — so `collab …` works from `~`. Use
+`--repo <path|app name>` to be explicit.
 
 ## What belongs in the log
 
-Not "edited three files". The things the next agent would otherwise have to
-rediscover, written as consequences:
+Not "edited three files". What the next agent would otherwise rediscover:
 
 - an invariant you established or relied on, and what breaks it;
 - a footgun you hit — the wrong-looking error, the silent failure;
-- anything you changed in a file someone else owns territory near;
-- when you deployed, and what state the tree was in.
+- anything you changed near territory someone else owns;
+- deploys and their result, and what state the tree was in.
+
+## Commands
+
+    collab status                 this repo: who's live, intents, files, overlaps
+    collab who                    every repo
+    collab intent "<task>" [--files …]
+    collab ack "<overlap>"
+    collab log "<what and why>"   collab history [-n N]
+    collab request <path> "<w>"   collab inbox   collab resolve <id> "done"
+    collab hold "<why>"           collab hold --release
+    collab done "<summary>"       release files, clear intent
+    agent-worktree new|list|finish
+
+Kill switch (Seth): `touch ~/.local/state/agent-collab/DISABLED`.

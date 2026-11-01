@@ -61,7 +61,8 @@ def main() -> int:
     body = body.format(sid=sid, tok=fmt_tokens(tok), detail=detail)
     summary = summary.format(sid=sid, tok=fmt_tokens(tok), detail=detail)
     cfg = load_config()
-    desktop(summary, body)
+    if cfg["DESKTOP"]:
+        desktop(summary, body)
     tg = telegram(f"{summary}\n{body}") if cfg["TELEGRAM"] else "telegram off"
     with state_path("cache-guard.log").open("a") as fh:
         fh.write(f"{utc_now()} {kind} sid={sid} tokens={tok} {detail} | {tg}\n")

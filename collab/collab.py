@@ -229,6 +229,13 @@ def current_session_id() -> str:
     explicit = os.environ.get("CLAUDE_SESSION_ID", "").strip()
     if explicit:
         return explicit
+    # Claude Code exports its own session id into every Bash tool call. Reading
+    # it here is what retired the `shell-<ppid>` ghost sessions: an agent that
+    # forgot to pin CLAUDE_SESSION_ID used to claim under a throwaway id that
+    # died with the shell, and could not release its own files afterwards.
+    inherited = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    if inherited:
+        return inherited
     return f"shell-{os.getppid()}"
 
 
@@ -263,6 +270,10 @@ def touch_session(session_id: str, *, cwd: str, label: str = "", task: str = "")
             "label": "",
             "task": "",
         }
+        if session_id in sessions and session.get("joined_at") and not is_live(session):
+            # Back after going quiet: the others stopped counting this session,
+            # so its next change must announce it again (see the gate).
+            session["rejoin_needed"] = True
         session["last_seen"] = now()
         session["cwd"] = cwd
         session["worktree"] = str(Path(cwd).name)
@@ -276,7 +287,60 @@ def touch_session(session_id: str, *, cwd: str, label: str = "", task: str = "")
             session["label"] = _auto_label(sessions, session_id)
         sessions[session_id] = session
         _write_json(path, sessions)
+    _index_touch(session_id, cwd)
     return session
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo index: which repos each session has been active in
+# ---------------------------------------------------------------------------
+#
+# Most sessions start in ~ and `cd` into an app per command, so the CLI's cwd
+# says nothing about which app the agent is working on. Before this index a bare
+# `collab log` from ~ landed in a `no-repo` channel no other session read. Now
+# the CLI falls back to the repo this session last touched, and SessionEnd can
+# release a session in every repo it worked in rather than only its launch dir.
+
+INDEX_KEEP_SECONDS = 24 * 3600
+
+
+def index_path() -> Path:
+    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    return STATE_ROOT / "_index.json"
+
+
+def _index_touch(session_id: str, cwd: str) -> None:
+    key = repo_key(cwd)
+    if key == "no-repo":
+        return
+    # Store the worktree root, not whatever subdirectory the CLI ran from.
+    cwd = _git(["rev-parse", "--show-toplevel"], cwd) or cwd
+    path = index_path()
+    try:
+        with _locked(path):
+            index = _read_json(path, {})
+            entry = index.setdefault(session_id, {"repos": {}})
+            entry["repos"][key] = {"cwd": cwd, "last_seen": now()}
+            entry["last_repo"] = key
+            for sid in list(index):
+                repos = index[sid].get("repos", {})
+                if all(age_seconds(r.get("last_seen", "")) > INDEX_KEEP_SECONDS
+                       for r in repos.values()):
+                    del index[sid]
+            _write_json(path, index)
+    except OSError:
+        pass
+
+
+def session_repos(session_id: str) -> Dict[str, dict]:
+    """{repo_key: {cwd, last_seen}} for every repo this session has touched."""
+    return (_read_json(index_path(), {}).get(session_id) or {}).get("repos", {})
+
+
+def last_repo_cwd(session_id: str) -> str:
+    entry = _read_json(index_path(), {}).get(session_id) or {}
+    repo = (entry.get("repos") or {}).get(entry.get("last_repo", ""))
+    return (repo or {}).get("cwd", "")
 
 
 def _auto_label(sessions: Dict[str, dict], session_id: str) -> str:
@@ -296,8 +360,126 @@ def end_session(session_id: str, cwd: str) -> None:
         sessions = _read_json(path, {})
         if session_id in sessions:
             sessions[session_id]["ended_at"] = now()
+            sessions[session_id].pop("hold", None)
             _write_json(path, sessions)
     release(session_id, [], cwd=cwd, everything=True)
+
+
+def update_session(session_id: str, cwd: str, **fields) -> dict:
+    """Set fields on a registered session; a None value deletes the field."""
+    path = sessions_path(cwd)
+    with _locked(path):
+        sessions = _read_json(path, {})
+        session = sessions.get(session_id)
+        if session is None:
+            return {}
+        for key, value in fields.items():
+            if value is None:
+                session.pop(key, None)
+            else:
+                session[key] = value
+        _write_json(path, sessions)
+    return session
+
+
+def live_others(session_id: str, cwd=None) -> List[dict]:
+    return [s for sid, s in load_sessions(cwd).items()
+            if sid != session_id and is_live(s)]
+
+
+# ---------------------------------------------------------------------------
+# Intent, arrivals, acknowledgements, holds
+# ---------------------------------------------------------------------------
+#
+# An agent's first state-changing action in a repo is refused until it says
+# what it is about to do (`collab intent`). That declaration is its JOIN: every
+# other live agent in the repo is then refused state-changing actions until it
+# has looked at the newcomer and logged how their work overlaps (`collab ack`).
+# Reads are never refused. The point is that no agent changes a shared tree
+# without knowing who else is in it — enforced by hooks, so it holds whether or
+# not the agent has heard of collab.
+
+def unacked_arrivals(session_id: str, cwd=None) -> List[dict]:
+    """Live agents that joined after this session last acknowledged the room."""
+    sessions = load_sessions(cwd)
+    me = sessions.get(session_id) or {}
+    if not me.get("joined_at"):
+        return []
+    seen = me.get("acked_at") or me.get("joined_at")
+    return [s for sid, s in sessions.items()
+            if sid != session_id and is_live(s) and s.get("joined_at")
+            and s["joined_at"] > seen]
+
+
+def files_of(session: dict, claims: Dict[str, dict]) -> List[str]:
+    sid = session.get("session_id")
+    held = [rel for rel, c in claims.items() if c.get("session_id") == sid]
+    return sorted(set(held) | set(session.get("intent_files") or []))
+
+
+def overlap(mine: List[str], theirs: List[str]) -> Dict[str, List[str]]:
+    """Same file, and same directory — the two ways work collides."""
+    same = sorted(set(mine) & set(theirs))
+    mine_dirs = {str(Path(p).parent) for p in mine}
+    near = sorted(p for p in set(theirs) - set(same)
+                  if str(Path(p).parent) in mine_dirs)
+    return {"same_file": same, "same_dir": near}
+
+
+def describe_session(session: dict, claims: Dict[str, dict], *, mine: List[str] = ()) -> str:
+    files = files_of(session, claims)
+    line = (f"  [{session.get('label', '?')}] {session.get('task') or '(no intent declared yet)'}"
+            f"  — {session.get('worktree', '?')} ({session.get('branch', '?')}), "
+            f"last active {int(age_seconds(session.get('last_seen', '')) // 60)} min ago")
+    if session.get("hold"):
+        line += f"\n      DEPLOY HOLD: {session['hold'].get('text', '')}"
+    if files:
+        line += f"\n      files: {', '.join(files[:10])}" + (
+            f" (+{len(files) - 10} more)" if len(files) > 10 else "")
+    if mine:
+        ov = overlap(list(mine), files)
+        if ov["same_file"]:
+            line += f"\n      OVERLAP same file: {', '.join(ov['same_file'])}"
+        if ov["same_dir"]:
+            line += f"\n      overlap same folder: {', '.join(ov['same_dir'][:6])}"
+    return line
+
+
+def declare_intent(session_id: str, text: str, files: List[str], *, cwd: str) -> dict:
+    """Record what this session is about to do; the first one is its join."""
+    before = load_sessions(cwd).get(session_id) or {}
+    # A session that went stale or ended and comes back is a new arrival too:
+    # the others stopped accounting for it when it went quiet.
+    first = (not before.get("joined_at") or not is_live(before)
+             or bool(before.get("rejoin_needed")))
+    touch_session(session_id, cwd=cwd, task=text)
+    rel_files = [repo_relative(f, cwd) for f in files]
+    stamp = now()
+    fields = {"intent_at": stamp, "intent_files": sorted(set(rel_files)), "acked_at": stamp,
+              "rejoin_needed": None, "log_offset": _log_size(cwd)}
+    if first:
+        fields["joined_at"] = stamp
+    update_session(session_id, cwd, **fields)
+    claimed = claim(session_id, rel_files, why=text, cwd=cwd) if rel_files else {}
+    kind = "join" if first else "intent"
+    suffix = f" — files: {', '.join(sorted(set(rel_files)))}" if rel_files else ""
+    append_log(session_id, f"{'joined' if first else 'now'}: {text}{suffix}", cwd=cwd, kind=kind)
+    return {"first": first, "claimed": claimed}
+
+
+def acknowledge(session_id: str, text: str, *, cwd: str) -> List[dict]:
+    # Stamp BEFORE reading: anyone joining in between stays unacknowledged
+    # (joined_at > stamp) instead of slipping under the new boundary unseen.
+    stamp = now()
+    arrivals = unacked_arrivals(session_id, cwd)
+    update_session(session_id, cwd, acked_at=stamp)
+    who = ", ".join(f"[{s.get('label', '?')}]" for s in arrivals) or "the room"
+    append_log(session_id, f"ack {who}: {text}", cwd=cwd, kind="ack")
+    return arrivals
+
+
+def holds_by_others(session_id: str, cwd=None) -> List[dict]:
+    return [s for s in live_others(session_id, cwd) if s.get("hold")]
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +577,50 @@ def append_log(session_id: str, text: str, *, cwd=None, kind: str = "note") -> d
         "label": session.get("label", "?"), "kind": kind, "text": text,
     }
     _append_jsonl(log_path(cwd), entry)
+    if session:
+        update_session(session_id, cwd, last_log_at=entry["at"])
     return entry
+
+
+def _log_size(cwd=None) -> int:
+    try:
+        return log_path(cwd).stat().st_size
+    except OSError:
+        return 0
+
+
+def unread_log(session_id: str, cwd=None, *, limit: int = 8) -> List[dict]:
+    """Other agents' log lines this session has not been shown yet; marks them read.
+
+    Kept as a byte offset in the session record so each hook reads only the tail
+    of the log, however long the log has grown.
+    """
+    session = load_sessions(cwd).get(session_id) or {}
+    if "log_offset" not in session:
+        return []
+    path = log_path(cwd)
+    size = _log_size(cwd)
+    start = session.get("log_offset", 0)
+    if start > size:
+        start = 0
+    if start == size:
+        return []
+    rows = []
+    with path.open("rb") as handle:
+        handle.seek(start)
+        for raw in handle.read().splitlines():
+            try:
+                row = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if row.get("session_id") != session_id:
+                rows.append(row)
+    update_session(session_id, cwd, log_offset=size)
+    if len(rows) > limit:
+        skipped = len(rows) - limit
+        rows = [{"label": "collab", "text": f"(+{skipped} earlier line(s) not shown — "
+                 f"`collab history -n {len(rows)}`)"}] + rows[-limit:]
+    return rows
 
 
 def add_request(session_id: str, rel_path: str, text: str, *, cwd=None) -> dict:
@@ -451,22 +676,27 @@ def render_status(cwd=None, *, session_id: str = "") -> str:
     grouped = claims_by_session(cwd)
     live = {sid: s for sid, s in sessions.items() if is_live(s)}
 
-    lines = []
+    lines = [f"repo: {repo_key(cwd)}"]
+    claims = load_claims(cwd)
+    me = sessions.get(session_id) or {"session_id": session_id}
+    my_files = files_of(me, claims)
     others = [s for sid, s in live.items() if sid != session_id]
     if not others:
         lines.append("No other agent is working in this repo right now.")
     else:
         lines.append(f"{len(others)} other agent(s) live in this repo:")
         for session in sorted(others, key=lambda s: s.get("started_at", "")):
-            sid = session.get("session_id", "")
-            held = sorted(grouped.get(sid, []))
-            lines.append(
-                f"  [{session.get('label', '?')}] {session.get('worktree', '?')} "
-                f"({session.get('branch', '?')}) — {session.get('task') or 'task not stated'}"
-            )
-            if held:
-                lines.append(f"      owns: {', '.join(held[:8])}"
-                             + (f" (+{len(held) - 8} more)" if len(held) > 8 else ""))
+            lines.append(describe_session(session, claims, mine=my_files))
+
+    if me.get("task"):
+        lines.append(f"\nYou are [{me.get('label', '?')}]: {me['task']}")
+    if me.get("hold"):
+        lines.append(f"Your deploy hold: {me['hold'].get('text', '')}")
+    pending = unacked_arrivals(session_id, cwd) if session_id else []
+    if pending:
+        lines.append("Not yet acknowledged by you: "
+                     + ", ".join(f"[{s.get('label', '?')}]" for s in pending)
+                     + '  → collab ack "<how your work overlaps theirs, or none>"')
 
     mine = sorted(grouped.get(session_id, []))
     if mine:
@@ -526,12 +756,42 @@ def main() -> None:
     p_sessions = subs.add_parser("sessions", help="list sessions")
     p_sessions.add_argument("--gc", action="store_true", help="forget stale sessions")
 
-    args = parser.parse_args()
-    cwd = os.getcwd()
+    p_intent = subs.add_parser("intent", help="say what you are about to do (your JOIN)")
+    p_intent.add_argument("text")
+    p_intent.add_argument("--files", nargs="*", default=[],
+                          help="files you expect to change; claimed for you")
+
+    p_ack = subs.add_parser("ack", help="log how your work overlaps newly arrived agents")
+    p_ack.add_argument("text")
+
+    p_hold = subs.add_parser("hold", help="block other agents' deploys of this repo")
+    p_hold.add_argument("text", nargs="?", default="")
+    p_hold.add_argument("--release", action="store_true")
+
+    p_done = subs.add_parser("done", help="finish your task: release files, clear intent")
+    p_done.add_argument("text", nargs="?", default="")
+
+    subs.add_parser("who", help="live agents in every repo")
+
+    parser.add_argument("--repo", default="",
+                        help="repo path or app name; default = cwd, else the repo you last worked in")
+
+    argv = sys.argv[1:]
+    # Accept --repo anywhere on the line, so `collab intent "x" --repo Delta-Note` works too.
+    if "--repo" in argv[1:]:
+        i = argv.index("--repo")
+        if i + 1 < len(argv):
+            argv = argv[i:i + 2] + argv[:i] + argv[i + 2:]
+    args = parser.parse_args(argv)
     session_id = current_session_id()
+    cwd = resolve_scope(args.repo, session_id)
 
     if not args.command:
         parser.print_help()
+        return
+
+    if args.command == "who":
+        print(render_who(session_id))
         return
 
     if args.command == "status":
@@ -601,6 +861,109 @@ def main() -> None:
             mark = "live" if is_live(session) else "gone"
             print(f"[{session.get('label', '?')}] {mark:>4}  {session.get('worktree', '?')} "
                   f"({session.get('branch', '?')})  {session.get('task', '')}  {sid}")
+
+    elif args.command in ("intent", "ack", "hold", "done") and repo_key(cwd) == "no-repo":
+        sys.exit("collab: not in a repo and no recent repo for this session — "
+                 "pass --repo <path or app name>")
+
+    elif args.command == "intent":
+        result = declare_intent(session_id, args.text, args.files, cwd=cwd)
+        me = load_sessions(cwd).get(session_id, {})
+        print(f"[{me.get('label', '?')}] {'joined' if result['first'] else 'updated intent'} "
+              f"in {repo_key(cwd)}: {args.text}")
+        for rel, outcome in result["claimed"].items():
+            print(f"{outcome:>22}  {rel}")
+        print()
+        print(render_status(cwd, session_id=session_id))
+        recent = [r for r in _read_jsonl(log_path(cwd))[-8:] if r.get("session_id") != session_id]
+        if recent:
+            print("\nRecent log from others:")
+            for row in recent:
+                print(f"  {row['at'][:16]}  [{row.get('label', '?')}] {row.get('text', '')[:200]}")
+        if any("HELD" in v for v in result["claimed"].values()):
+            print("\nSome files are held by a live agent: do not edit them — "
+                  "`collab request <path> \"<change>\"`, or coordinate in the log.")
+
+    elif args.command == "ack":
+        touch_session(session_id, cwd=cwd)
+        arrivals = acknowledge(session_id, args.text, cwd=cwd)
+        print(f"acknowledged {', '.join('[' + s.get('label', '?') + ']' for s in arrivals) or 'nothing pending'}"
+              f" in {repo_key(cwd)} — logged.")
+
+    elif args.command == "hold":
+        touch_session(session_id, cwd=cwd)
+        if args.release:
+            update_session(session_id, cwd, hold=None)
+            append_log(session_id, "deploy hold RELEASED", cwd=cwd, kind="hold")
+            print("hold released")
+        else:
+            if not args.text:
+                sys.exit('collab hold "<why a deploy right now would break>"')
+            update_session(session_id, cwd, hold={"text": args.text, "at": now()})
+            append_log(session_id, f"DEPLOY HOLD: {args.text}", cwd=cwd, kind="hold")
+            print(f"hold set in {repo_key(cwd)}: other agents' deploys are refused until "
+                  f"`collab hold --release` (or you go quiet for 90 min).")
+
+    elif args.command == "done":
+        touch_session(session_id, cwd=cwd)
+        released = release(session_id, [], cwd=cwd, everything=True)
+        update_session(session_id, cwd, task="", intent_files=None, hold=None)
+        append_log(session_id, f"done: {args.text or '(no summary)'} — released {len(released)} file(s)",
+                   cwd=cwd, kind="done")
+        print(f"released {len(released)} file(s); intent cleared. "
+              f"Your next change in this repo will ask for a new intent.")
+
+
+def resolve_scope(explicit: str, session_id: str) -> str:
+    """Which repo a CLI call is about: --repo, else cwd, else last-touched repo."""
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        if not candidate.is_dir():
+            apps = Path.home() / "Applications" / explicit
+            if apps.is_dir():
+                candidate = apps
+            else:
+                index = _read_json(index_path(), {})
+                cwds = [r.get("cwd", "") for e in index.values()
+                        for k, r in (e.get("repos") or {}).items()
+                        if k.lower().startswith(explicit.lower())]
+                if not cwds:
+                    sys.exit(f"collab: no repo matches --repo {explicit}")
+                candidate = Path(cwds[0])
+        return str(candidate.resolve())
+    cwd = os.getcwd()
+    if common_git_dir(cwd):
+        return cwd
+    fallback = last_repo_cwd(session_id)
+    if fallback and Path(fallback).is_dir():
+        print(f"(collab: using {Path(fallback).name}, the repo you last worked in; "
+              f"--repo to change)", file=sys.stderr)
+        return fallback
+    return cwd
+
+
+def render_who(session_id: str) -> str:
+    lines = []
+    if not STATE_ROOT.is_dir():
+        return "No agents recorded."
+    for state in sorted(STATE_ROOT.iterdir()):
+        if not state.is_dir() or state.name == "no-repo":
+            continue
+        sessions = _read_json(state / "sessions.json", {})
+        claims = _read_json(state / "claims.json", {})
+        holders = {c.get("session_id") for c in claims.values()}
+        live = [s for s in sessions.values() if is_live(s)]
+        # Only agents doing something: a session that merely read or logged
+        # here is noise in a briefing.
+        active = [s for s in live if s.get("task") or s.get("session_id") in holders]
+        if not active:
+            continue
+        idle = len(live) - len(active)
+        lines.append(f"{state.name}: {len(active)} active" + (f", {idle} idle" if idle else ""))
+        for s in sorted(active, key=lambda s: s.get("started_at", "")):
+            me = " (you)" if s.get("session_id") == session_id else ""
+            lines.append(describe_session(s, claims) + me)
+    return "\n".join(lines) or "No live agents in any repo."
 
 
 if __name__ == "__main__":

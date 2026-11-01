@@ -1,0 +1,6 @@
+# Shortcuts for `@` autocomplete (read by file-suggestion.sh).
+# One per line: <name> <folder>   (~ allowed; # starts a comment)
+#   @name            -> folder is the top suggestion (also while typing a prefix)
+#   @name readme     -> search only inside that folder (space or / after the name)
+app      ~/Applications/my-app
+api      ~/Applications/my-api

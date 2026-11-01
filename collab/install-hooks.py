@@ -1,47 +1,60 @@
 #!/usr/bin/env python3
-"""Wire the coordination hooks into one worktree's .claude/settings.json.
+"""Wire the coordination hook GLOBALLY into ~/.claude/settings.json.
 
-Merges rather than overwrites: these worktrees already carry graphify guards and
-the Vercel plugin, and blowing those away to install coordination would be a
-poor trade. Re-running is safe — entries are matched by command path and
-replaced in place, so an upgrade does not leave two copies firing.
+    install-hooks.py                       install / upgrade the global wiring
+    install-hooks.py --uninstall           remove it
+    install-hooks.py --remove-legacy <worktree>...
+                                           strip the old per-repo wiring from a
+                                           worktree's .claude/settings.local.json
 
-    install-hooks.py $HOME/Applications/Delta-Drills-Colab
-    install-hooks.py --remove <worktree>
+Global since 2026-10-08. The per-repo wiring (one worktree's
+settings.local.json) only fired for sessions launched INSIDE that worktree; most
+sessions start in ~ and cd per command, so they ran unguarded. The hook now
+works out each call's repo itself, so one global entry covers every repo.
 
-Writes .claude/settings.local.json, which Claude Code merges over
-settings.json. Deliberate: settings.json is tracked on some branches, and this
-wiring contains absolute machine paths that must not be committed.
+Merges rather than overwrites, and re-running is safe: entries are matched by
+command path and replaced, so an upgrade never leaves two copies firing. A
+global settings.json is not inside any repo, so the old "never write
+settings.json, it gets swept into a deploy commit" hazard does not apply here.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 HOOKS = Path(__file__).resolve().parent / "hooks"
+HOOK = HOOKS / "collab_hook.py"
+GLOBAL_SETTINGS = Path.home() / ".claude" / "settings.json"
 
+TOOL_MATCHER = "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__delta-note__.*"
 WIRING = [
-    ("SessionStart", None, HOOKS / "session_start.py"),
-    ("PreToolUse", "Edit|Write|NotebookEdit", HOOKS / "pre_edit_guard.py"),
-    ("PostToolUse", "Edit|Write|NotebookEdit", HOOKS / "post_edit_claim.py"),
-    ("SessionEnd", None, HOOKS / "session_end.py"),
+    ("SessionStart", None),
+    ("UserPromptSubmit", None),
+    ("PreToolUse", TOOL_MATCHER),
+    ("PostToolUse", TOOL_MATCHER),
+    ("SessionEnd", None),
 ]
 
 
-def command_for(script: Path) -> str:
-    return f"/usr/bin/python3 {script}"
+def command() -> str:
+    return f"/usr/bin/python3 {HOOK}"
+
+
+def ours(cmd: str) -> bool:
+    return str(HOOKS) in (cmd or "")
 
 
 def strip_ours(settings: dict) -> dict:
     """Drop every entry pointing at this install, leaving foreign hooks alone."""
-    ours = {command_for(script) for _, _, script in WIRING}
     hooks = settings.get("hooks") or {}
     for event, groups in list(hooks.items()):
         kept_groups = []
         for group in groups:
-            kept = [h for h in (group.get("hooks") or []) if h.get("command") not in ours]
+            kept = [h for h in (group.get("hooks") or []) if not ours(h.get("command", ""))]
             if kept:
                 kept_groups.append({**group, "hooks": kept})
         if kept_groups:
@@ -52,52 +65,65 @@ def strip_ours(settings: dict) -> dict:
     return settings
 
 
-def install(worktree: Path, remove: bool = False) -> None:
-    # settings.LOCAL.json, never settings.json. In Delta Drills the latter is
-    # TRACKED on the deploy-colab branch, so writing machine-absolute hook paths
-    # there would be committed and pushed by the Colab deploy's `git add -A`.
-    # The two files merge, so graphify's hooks in settings.json keep working.
-    settings_path = worktree / ".claude" / "settings.local.json"
-    settings = {}
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            sys.exit(f"{settings_path} is not valid JSON — fix it before installing.")
+def load(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        sys.exit(f"{path} is not valid JSON — fix it before installing.")
 
-    settings = strip_ours(settings)
 
+def save(path: Path, settings: dict) -> None:
+    if path.exists():
+        # Backups go to the state dir, never next to the file: a worktree's
+        # .claude/ can be swept into a deploy commit by `git add -A`.
+        backups = Path.home() / ".local" / "state" / "agent-collab" / "settings-backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        tag = str(path.parent.parent.name) + "-" + path.name
+        backup = backups / f"{tag}.{datetime.now():%Y%m%d-%H%M%S}"
+        shutil.copy2(path, backup)
+    tmp = path.with_suffix(".tmp-collab")
+    tmp.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def install_global(remove: bool) -> None:
+    settings = strip_ours(load(GLOBAL_SETTINGS))
     if not remove:
         hooks = settings.setdefault("hooks", {})
-        for event, matcher, script in WIRING:
-            entry = {"type": "command", "command": command_for(script)}
-            group = {"hooks": [entry]}
+        for event, matcher in WIRING:
+            group = {"hooks": [{"type": "command", "command": command(), "timeout": 10}]}
             if matcher:
                 group["matcher"] = matcher
-            # Fold into an existing group with the same matcher so one event
-            # does not accumulate a group per install.
-            existing = next(
-                (g for g in hooks.get(event, []) if g.get("matcher") == matcher), None)
-            if existing:
-                existing.setdefault("hooks", []).append(entry)
-            else:
-                hooks.setdefault(event, []).append(group)
+            hooks.setdefault(event, []).append(group)
+    save(GLOBAL_SETTINGS, settings)
+    print(f"{'removed from' if remove else 'installed into'} {GLOBAL_SETTINGS}")
 
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    print(f"{'removed from' if remove else 'installed into'} {settings_path}")
+
+def remove_legacy(worktree: Path) -> None:
+    path = worktree / ".claude" / "settings.local.json"
+    if not path.exists():
+        print(f"no {path}")
+        return
+    settings = strip_ours(load(path))
+    if not settings.get("hooks"):
+        settings.pop("hooks", None)
+    save(path, settings)
+    print(f"legacy wiring removed from {path}")
 
 
 def main() -> None:
-    args = [a for a in sys.argv[1:] if a != "--remove"]
-    remove = "--remove" in sys.argv[1:]
+    args = sys.argv[1:]
     if not args:
+        install_global(remove=False)
+    elif args == ["--uninstall"]:
+        install_global(remove=True)
+    elif args[0] == "--remove-legacy" and len(args) > 1:
+        for target in args[1:]:
+            remove_legacy(Path(target).expanduser().resolve())
+    else:
         sys.exit(__doc__)
-    for target in args:
-        worktree = Path(target).expanduser().resolve()
-        if not worktree.is_dir():
-            sys.exit(f"{worktree} is not a directory")
-        install(worktree, remove)
 
 
 if __name__ == "__main__":

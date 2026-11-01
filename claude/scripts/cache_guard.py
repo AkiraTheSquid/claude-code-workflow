@@ -11,14 +11,15 @@ can suggest /compact. Slash commands (/clear, /compact, /refresh) always pass.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cache_common import (TTL_SECONDS, fmt_tokens, load_config, read_heartbeat,  # noqa: E402
-                          state_path, transcript_last_turn)
+from cache_common import (TTL_SECONDS, compacted_since_last_turn, fmt_tokens, load_config,  # noqa: E402
+                          read_heartbeat, state_path, transcript_last_turn)
 
 
 def cold_state(sid: str, transcript: str) -> tuple[bool, int, int]:
@@ -55,6 +56,10 @@ def stash_prompt(sid: str, prompt: str) -> Path:
 
 
 def main() -> int:
+    # Headless runners with no terminal to "send again" (the Delta Note chat
+    # worker, ops/claude-chat) set this and make the cold-cache call themselves.
+    if os.environ.get("CACHE_GUARD_SKIP") == "1":
+        return 0
     try:
         data = json.load(sys.stdin)
     except json.JSONDecodeError:
@@ -67,6 +72,8 @@ def main() -> int:
     transcript = data.get("transcript_path", "")
     if not sid or not transcript or not Path(transcript).exists():
         return 0
+    if compacted_since_last_turn(transcript):
+        return 0  # already compacted: next turn rebuilds only the small summary, never block
     cfg = load_config()
     cold, tokens, idle_min = cold_state(sid, transcript)
     if not cold or tokens < cfg["MIN_TOKENS"]:

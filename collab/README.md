@@ -20,8 +20,15 @@
 - Merging. `agent-worktree finish` prints the merge and stops.
 
 ## Key Files
+- `hooks/collab_hook.py`: **the** hook since 2026-10-08, wired GLOBALLY in
+  `~/.claude/settings.json` for SessionStart, UserPromptSubmit, PreToolUse,
+  PostToolUse and SessionEnd. Works out each tool call's repo(s) itself, gates
+  state-changing calls (intent → ack → claims → risky git → deploy holds),
+  auto-claims, auto-logs commits/deploys, and pushes other agents' log lines.
+- `scan.py`: reads a Bash command — repos touched, state-changing or not, files
+  written, risky git, deploys. Unknown commands count as state-changing.
 - `collab.py` → `~/.local/bin/collab`: state, and the CLI over it.
-- `hooks/session_start.py`: registers the session and injects the "who else is
+- LEGACY (still importable; no longer wired): `hooks/session_start.py` registers the session and injects the "who else is
   here" briefing. This is the notification half — without it an agent has no way
   to learn another one exists.
 - `hooks/pre_edit_guard.py`: **denies** an edit to a file another live session
@@ -29,12 +36,13 @@
 - `hooks/post_edit_claim.py`: takes ownership of whatever you just edited, so
   claiming is a consequence of working rather than a thing to remember.
 - `hooks/session_end.py`: hands every file back.
-- `install-hooks.py <worktree>`: merges the wiring into that worktree's
-  `.claude/settings.local.json`, leaving foreign hooks alone. Re-runnable, and
-  `--remove` undoes it.
+- `install-hooks.py`: installs/upgrades the global wiring (`--uninstall`;
+  `--remove-legacy <worktree>` strips the old per-repo wiring). Backups of any
+  settings file it touches go to `~/.local/state/agent-collab/settings-backups/`.
 - `agent-worktree` → `~/.local/bin/agent-worktree`: `new` / `list` / `finish`.
 - `COLLAB.md`: the protocol, addressed to an agent that just got the banner.
-- `selftest.sh`: two simulated sessions through the real hooks. 14 checks. Set `COLLAB_TEST_A` / `COLLAB_TEST_B` (two worktrees of one repo) and `COLLAB_TEST_FILE` (a tracked file) to run it on your machine.
+- `selftest.sh`: legacy hooks, 14 checks. `selftest-gate.sh`: the global hook,
+  three simulated sessions in a throwaway repo, 32 checks. Run both after any change.
 
 ## Data & External Dependencies
 - State: `~/.local/state/agent-collab/<repo-name>-<hash>/` — `sessions.json`,
@@ -45,7 +53,24 @@
 - Claude Code hook events `SessionStart`, `PreToolUse`, `PostToolUse`,
   `SessionEnd`, which supply `session_id`, `cwd` and `tool_input`.
 
-## How It Works (Flow)
+## How It Works (Flow, since 2026-10-08)
+1. Every Bash/Edit/Write/MultiEdit/NotebookEdit/`mcp__delta-note__*` call → the
+   hook finds the repos it touches (file path; `cd`/`git -C`/path args/redirect
+   targets; MCP server → app) and heartbeats the session in each.
+2. Read-only → allowed. State-changing → refused, with the exact command, until:
+   the session has declared `collab intent` in that repo (its JOIN, logged and
+   announced); it has `collab ack`ed every agent that joined after it last
+   looked; it writes no file another live agent owns; it runs no risky git op
+   while others are active (`git stash` never); and no other agent holds deploys.
+3. After the call: written files are claimed, a real commit is logged with its
+   sha, a deploy gets a "log the result" nudge, other agents' unseen log lines are
+   pushed into context, and 25 quiet minutes earn a milestone nudge.
+4. UserPromptSubmit pushes the same unseen lines + pending arrivals to an idle
+   session; SessionEnd releases it in every repo it touched (via `_index.json`).
+5. CLI: session id from `CLAUDE_CODE_SESSION_ID`; repo from `--repo`, else cwd,
+   else the session's last-touched repo — so `collab log` from ~ lands right.
+
+## How It Worked Before (per-repo legacy flow)
 1. A session starts. `session_start.py` registers it and, **only if another
    session is live**, injects a briefing naming who is there and what they hold.
 2. The agent edits a file. `pre_edit_guard.py` checks the claim: another live
@@ -78,7 +103,14 @@
 - **Agent worktrees are siblings of the repo, not children of it.** Delta Note
   put them under `.claude/worktrees/`; here that would be inside the `add -A`.
 - **This is coordination, not locking.** It stops an agent that does not know
-  better. It does not stop `sed -i`, and it is not a security boundary.
+  better. Bash write detection is a heuristic (`scan.py`): `python script.py`
+  that writes files is "state-changing" (gated) but its targets are unknown, so
+  claims are not checked for it. Not a security boundary.
+- **Reads are never gated**, and the gate only ever asks for a `collab`
+  command, which is itself never gated — no deadlock is possible.
+- **Global wiring lives in `~/.claude/settings.json`**, outside every repo, so
+  the deploy-sweep hazard above does not apply to it. Per-repo wiring is removed
+  (`--remove-legacy`) so nothing fires twice.
 
 ## Extension Points
 - Wire another repo: `install-hooks.py <that worktree>`. State separates itself
@@ -128,6 +160,15 @@
   - Status: `RESOLVED`.
 
 ## Recent Changes
+- 2026-10-08: GLOBAL + enforced join protocol (Seth: "it should just always
+  work and I never have to remind the AI about collab"). One hook for every repo;
+  intent-on-join, ack-on-arrival, Bash write/claim checks, risky-git refusals,
+  deploy holds, auto-logged commits/deploys, pushed log lines, milestone nudges,
+  `CLAUDE_CODE_SESSION_ID` identity (kills `shell-<ppid>` ghosts) and
+  last-repo scoping (kills the `no-repo` channel). New CLI: `intent`, `ack`,
+  `hold`, `done`, `who`, `--repo`. Per-repo wiring removed from Delta-Drills-Local,
+  -Colab and -agents/features. Backup of the pre-change tool:
+  `~/.local/share/agent-collab.bak-2026-10-08`.
 - 2026-08-18: Created, porting Delta Note's `COLLAB-focus-timer.md` protocol into
   something enforced. The markdown version worked only for agents that read it;
   an agent that never opened the file was invisible to the whole system, and the
