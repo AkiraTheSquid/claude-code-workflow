@@ -36,18 +36,18 @@ positive quality and speed are good. Every cell says where its number comes from
 | 2 | **CLIs + MCP for every website** | 0% E | +5% E | +10% E | The agent can deploy and write to production itself; a wrong command hits real systems |
 | 3 | **collab: parallel sessions** | 0% per task M | −5% E | **+37%** M | Drains your plan 1.37× faster per hour; you become the bottleneck at 4–5 agents; conflicts between agents' changes slip through |
 | 4 | **Automatic critic** (Codex reviews every diff) | +10% M (upper bound) | **+33%** L | **−14%** M | Tasks it runs on take **1.84×** as long M; applying Codex's fixes blindly made Claude's code worse in one benchmark |
-| 5 | **Cache protection** (1-hour TTL + cache guard) | **−6%** M | 0% | 0% E | The guard blocks your prompt after >1 h idle (156 times) until you pick `/clear`, `/compact` or resend |
+| 5 | **Cache protection** (1-hour TTL + cache guard) | **−9%** M (TTL 3.6%, guard 5.1%) | 0% | 0% E | The guard blocks your prompt after >1 h idle (156 times) until you pick `/clear`, `/compact` or resend |
 | 6 | **graphify** (codebase knowledge graph) | −2 to −4% E, if used | 0% E | + E | A stale graph misleads; one more hook to break. Barely used yet, so it's left out of the total |
-| | **Combined** | **≈ −24%** (≈1.3× as much work per plan) | **≈ +35 to +40%** E | **≈ +23 to +31%** | |
+| | **Combined** | **≈ −26%** (≈1.35× as much work per plan) | **≈ +35 to +40%** E | **≈ +23 to +31%** | |
 
 **How the combined row is computed.** It multiplies each column's factors
 (e.g. 0.76 × 0.94 × …), adjusted where two tools clearly aren't independent:
 - **Usage:**
   - The compact window and the cache compound: a bigger context under a
-    5-minute cache costs more than either alone. So I add their shares (−30.5%)
-    rather than multiply them (−29%).
-  - Then ×1.10 for the critic's extra Claude turns: **−24%**.
-  - With graphify in daily use, roughly −26%.
+    5-minute cache costs more than either alone. So I add their shares (−32.4%)
+    rather than multiply them (−30.3%).
+  - Then ×1.10 for the critic's extra Claude turns: **−26%**.
+  - With graphify in daily use, roughly −28%.
 - **Speed:**
   - Straight multiplication gives **+23%**.
   - collab's 1.37× was measured with the critic and compaction already on, and
@@ -62,11 +62,21 @@ positive quality and speed are good. Every cell says where its number comes from
 
 **Plan usage assumes** your plan counts tokens with the same weights as API
 prices (cache reads cheap; cache writes and output expensive). Anthropic doesn't
-publish the formula. I tried to calibrate it from my three usage-limit hits, but
-they held 7× different amounts of Claude Code usage under every weighting I
-tried. Usage from claude.ai chat and other devices counts against the same limit
-and isn't in the transcripts. If your plan counts cache reads as even cheaper,
-item 1 shrinks and item 5 matters more.
+publish the formula, but three independent community datasets that logged the
+live quota % per call agree: cache reads count at about **0.1× input**, the
+published billing rate.
+- [cache-fix](https://github.com/anthropics/claude-code/issues/45756#issuecomment-4307428785):
+  16,531 calls over 57 windows.
+- [ArkNill](https://github.com/ArkNill/claude-code-hidden-problem-analysis/blob/main/02_RATELIMIT-HEADERS.md):
+  38,996 requests.
+- [seanGSISG](https://github.com/ArkNill/claude-code-hidden-problem-analysis/issues/3):
+  179k calls.
+
+Those were measured on Opus 4.6. Opus 5.5's API read rate is 0.05×; if plans
+still count reads at 0.1×, item 1 is worth more than shown here. My own
+calibration attempt failed: my three usage-limit hits held 7× different amounts
+of Claude Code usage, because claude.ai chat and other devices count against
+the same limit and aren't in the transcripts.
 
 **Tried and dropped: caveman** (terse-output plugin, "~75% fewer tokens").
 - **Small ceiling:** that 75% applies only to prose, which is ~6% of my output
@@ -322,7 +332,36 @@ whose reads are 0.025×).
   - **156 blocks across 142 cold episodes** (re-prompting while blocked counts
     once): I compacted 43 times, cleared or abandoned 83, and re-sent 16 anyway.
   - Only 9 large cold rebuilds were actually paid all period.
-  - **Measured: −$121, about 2.5% of plan usage.**
+  - **Measured: −$250, about 5.1% of plan usage.** Two parts:
+    - **$121 on the blocked turn itself:** the cold rewrite you didn't pay.
+    - **$129 afterwards:** each guard-prompted `/compact` or `/clear` left a
+      smaller context, re-read more cheaply on **3,372 later turns**. Without the
+      guard you'd have resent into the big context and carried it until
+      auto-compact fired anyway.
+  - **Why it isn't bigger:** a cold turn costs ~40× a warm one, but it's still
+    one turn. 142 episodes against 52,000 turns, at ~$1–2 each, adds up to a few
+    percent. The guard matters more in practice than in totals: it's what makes
+    you compact at the right moment instead of dragging a stale context along.
+
+**Other people's data** on cold caches:
+- **One resumed message, 9% of a 5-hour limit:** a user resumed a 500k-token
+  session after 7 hours idle, and that single message took the window from 0% to
+  9%. The issue asks for exactly what the guard does: "Gate large replays with
+  user confirmation"
+  ([anthropics/claude-code#43599](https://github.com/anthropics/claude-code/issues/43599)).
+- **Anthropic agrees:** Claude Code's creator, Boris Cherny: "if you leave your
+  computer for over an hour then continue a stale session, it's often a full
+  cache miss", and those misses "are expensive" with a 1M window
+  ([DevClass](https://www.devclass.com/ai-ml/2026/04/14/claude-code-cache-confusion-as-anthropic-tweaks-defaults-but-quotas-still-drain/5216975)).
+- **Up to 20× cost on resumed sessions:**
+  [claude-code-cache-fix](https://github.com/cnighswonger/claude-code-cache-fix)
+  is a community proxy that pins the 1-hour TTL and stabilises the cached
+  prefix. It reports up to 20× cost on resumed sessions without it, and a 95.5%
+  cache hit rate through it against 82.3% direct.
+- **Aggregates are missing:** none of these give the share of total usage lost
+  to cold rebuilds, which is the number above. Everything published is
+  per-incident, so a single bad resume looks huge, while across 52,000 turns
+  it's a few percent.
   - The statusline shows the cache live: `cache: warm 42m left · hit 97%`.
 
 **Set up:** installed by `install.sh`. Thresholds are in
@@ -369,8 +408,12 @@ and it's lowest when you already point the agent at exact files.
   - Compacted: saves 2× − 1.25× of the blocked context.
   - Cleared or abandoned: saves the full 2× rewrite.
   - Re-sent: saves nothing.
+  - Carry-forward: after a compact or clear, the dropped tokens are priced on
+    every later turn (warm read, or 2× after a gap of more than 1 hour). This
+    stops at the next compaction, or when the larger context would have hit my
+    own ~267k auto-compact.
 - **Plan share:** each saving ÷ stock usage, i.e. actual ($3,330) plus all
-  measured savings ($4,794). graphify's not-yet-realised saving is ÷
+  measured savings ($4,932). graphify's not-yet-realised saving is ÷
   current usage instead. Assumes plan limits weight tokens like API
   prices; Anthropic doesn't publish the formula.
 - **Parallelism:** a session is "active" while its turns are under 5 minutes

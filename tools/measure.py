@@ -22,6 +22,7 @@ PRICES = {
     "claude-haiku-5-5": (0.10, 0.50, 0.01),
 }
 DEFAULT_WINDOW_FIRE = 1_000_000 - 33_000      # stock 1M-context auto-compact point
+OWN_WINDOW_FIRE = 300_000 - 33_000            # where my autoCompactWindow: 300000 fires
 TTL_1H, TTL_5M = 3600, 300
 EXPLORE_TOOLS = {"Read", "Grep", "Glob"}
 EXPLORE_BASH = re.compile(r"^\s*(cd [^;&]+(&&|;)\s*)?(grep|rg|find|ls|cat|head|tail|sed -n|tree|wc|fd)\b")
@@ -191,6 +192,7 @@ for path in files + sub_files:
     text_tok_live = 0.0     # caveman text tokens currently in context
     explore_tok_live = 0.0
     pending_block = None
+    guard_offset = 0        # tokens a guard-prompted compact/clear dropped, carried until the context would auto-compact anyway
     for i, e in enumerate(ev):
         k = e["kind"]
         if k == "compact":
@@ -207,11 +209,14 @@ for path in files + sub_files:
                 offset = 0
             text_tok_live = 0.0
             explore_tok_live = 0.0
+            if not pending_block:
+                guard_offset = 0    # a compaction I'd have made anyway; a guard-prompted one adds below
             if pending_block:
                 block_outcomes["compacted"] += 1
                 pin = price("claude-opus-5-5")[0]
                 # compacting cold re-processes the context once (~write price) but every later turn is small
                 R["guard_saved_compacted"] += pending_block * (2.0 - 1.25) * pin / 1e6
+                guard_offset += max(0, pending_block - e["post"])
                 pending_block = None
             continue
         if k == "block":
@@ -271,6 +276,7 @@ for path in files + sub_files:
             else:
                 block_outcomes["cleared_or_small"] += 1
                 R["guard_saved_cleared"] += pending_block * 2.0 * pin / 1e6
+                guard_offset += max(0, pending_block - ctx(r))
             pending_block = None
 
         # cold rebuilds that actually happened
@@ -289,6 +295,14 @@ for path in files + sub_files:
             cf_cache = r["cw"] * 1.25 * pin + r["cr"] * pread
         R["ttl_actual"] += actual_cache / 1e6
         R["ttl_cf5m"] += cf_cache / 1e6
+
+        # guard carry-forward: without the block I'd have resent into the big context and kept
+        # re-reading it until my own auto-compact (OWN_WINDOW_FIRE) would have fired anyway
+        if guard_offset and context + guard_offset > OWN_WINDOW_FIRE:
+            guard_offset = 0
+        if guard_offset:
+            R["guard_saved_carry"] += guard_offset * (2.0 * pin if gap > TTL_1H else pread) / 1e6
+            C["guard_turns_carried"] += 1
 
         # stock compaction window: carry `offset` extra tokens on every turn
         if context + offset > DEFAULT_WINDOW_FIRE:
