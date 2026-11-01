@@ -300,6 +300,34 @@ reviews with 750 findings, and a hand check of 30 labels found 29 right:
   review comments get marked resolved 54.8% of the time, against 72.9% for
   Copilot's ([Cynthia et al., 2026](https://arxiv.org/html/2607.21997v2)).
 
+**Were the findings real? Checked against the code.** I hand-checked 40 findings
+(high and medium, 10 per verdict) against the repos as they were at review time
+and their git history afterwards: later fixes, reverts, features removed.
+
+| Claude's verdict | Real bug | Real but minor, by design, or moot later | Codex wrong | Unclear |
+|---|---|---|---|---|
+| Fixed | 6 | 3 | 0 | 1 |
+| Left for later | 4 | 5 | 0 | 1 |
+| Disputed | 0 | 1 | **9** | 0 |
+| No verdict stated | 2 | 5 | 3 | 0 |
+
+- **Claude's call was right in all 34 cases I could judge.** Every dispute was a
+  Codex error, or behaviour that was intended. Every fix addressed a real
+  problem.
+- **Weighted to the full 750 findings,** about 41% are real bugs that mattered,
+  38% are real but minor, by design, or made moot by a later change, and 21% are
+  wrong. That's roughly **one real bug fixed per review**.
+- **Codex's errors have a pattern.** Of the 12 wrong findings, 6 said something
+  something was missing ("never wired up", "no data") when it sat in a file
+  outside the reviewed `--files` list. 4 were code paths that can't be reached, and 2 misread the
+  logic.
+- **"No verdict" mostly means quietly handled.** Claude dropped Codex's wrong
+  findings without comment, and two real bugs were fixed in the next commit
+  without being mentioned.
+- **Limits:** 40 findings gives roughly ±15 points on each share. I'm the same
+  model family as the author, so this is a careful check of the code, not an
+  independent one.
+
 **What the research says:**
 - **Two different models catch more than two passes of one.** One same-model
   review plus one cross-model review caught **56.7%** of planted errors, against
