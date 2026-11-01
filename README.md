@@ -255,9 +255,8 @@ unprompted:
 - before every commit or deploy.
 
 **Measured:** 545 critic runs in 6 weeks, about 13 a day. The 113 reviews kept on
-disk contain **116 high-, 320 medium- and 150 low-severity findings**. Claude
-verifies each one before acting, and not every finding is real, but that's about
-one serious issue per review caught before it shipped. The review itself runs
+disk contain **116 high-, 320 medium- and 150 low-severity findings**: about one
+serious issue per review caught before it shipped. The review itself runs
 on a ChatGPT/Codex plan. Claude's own turns reconciling and fixing cost up to
 ~10% more Claude usage (below).
 
@@ -275,14 +274,41 @@ from the first critic call in a task to my next prompt:
 - **What you get back is quality.** With parallel panes (item 3), the extra time
   is mostly time you spend on other agents anyway.
 
+**What Claude does with Codex's findings.** Codex never edits. Claude checks
+each finding against the code, then fixes it, leaves it, or disputes it.
+Measured with [`tools/critic_verdicts.py`](tools/critic_verdicts.py), which has
+Sonnet label every finding from what Claude wrote afterwards. It covered 230
+reviews with 750 findings, and a hand check of 30 labels found 29 right:
+
+| Claude's verdict | All | High | Medium | Low |
+|---|---|---|---|---|
+| Agreed and fixed (incl. 2% partly) | **72%** | 53% | 73% | 79% |
+| Agreed, left for later | 11% | 16% | 10% | 11% |
+| Disputed: wrong, already handled, or intended | **17%** | **32%** | 17% | 10% |
+
+- **Base:** these shares cover the 474 findings (63%) where Claude stated a
+  verdict. For the rest, Claude's text says nothing about the finding. Some were
+  findings on another session's files, some were cut off when the output was
+  piped through `tail`, and some got a blanket "no live bugs".
+- **Severity:** the higher the severity Codex claims, the more often Claude
+  rejects it. High findings are disputed **32%** of the time, low ones 10%.
+  76 more reviews, seen only through `tail`/`jq`, give the same pattern
+  (18% disputed, 31% for high).
+- **Compared with people:** developers accept 36.4% of CodeRabbit comments and
+  reject 56.3%; 43.3% of the rejected ones were false positives
+  ([Lin et al., 2026](https://arxiv.org/html/2607.03316v2)). Codex's GitHub
+  review comments get marked resolved 54.8% of the time, against 72.9% for
+  Copilot's ([Cynthia et al., 2026](https://arxiv.org/html/2607.21997v2)).
+
 **What the research says:**
 - **Two different models catch more than two passes of one.** One same-model
   review plus one cross-model review caught **56.7%** of planted errors, against
   **42.7%** for two same-model reviews. The two kinds of reviewer find partly
   different errors (41% overlap)
   ([Song, 2026](https://arxiv.org/abs/2610.01471)).
-- **Direction matters, and blind fixes can make code worse.** On 116
-  LiveCodeBench tasks:
+- **Direction matters, and a reviewer that rewrites the code itself can make it
+  worse.** On 116 LiveCodeBench tasks, where the reviewer returns the final
+  program with no check by the author:
 
   | Reviewer → author | Pass rate before → after review |
   |---|---|
@@ -290,11 +316,15 @@ from the first critic call in a task to my next prompt:
   | Codex reviewing itself | 71.6% → 84.5% |
   | Codex reviewing Claude | **91.4% → 82.8%** (worse) |
 
-  ([Xiang et al., 2026](https://arxiv.org/abs/2607.21656)). Codex reviewing
-  Claude's code is exactly this setup. That's why Codex never edits here: Claude
-  has to **verify each finding against the
-  code before acting**, and disputed findings are reported, not applied. A
-  critic whose findings are relayed blindly can lower quality.
+  ([Xiang et al., 2026](https://arxiv.org/abs/2607.21656)). In the
+  Codex-reviews-Claude case, Codex fixed 3 of Claude's failures and broke 13 of
+  its passes, often by throwing away a working approach. The authors suggest
+  letting the reviewer "first decide whether to intervene" as the next
+  experiment.
+- **The setup here wasn't tested.** I found no study of the loop used here:
+  the reviewer only flags issues and the author decides. That loop is the
+  guard against Xiang's failure mode. The 17% (32% on high findings) that Claude
+  disputes are the edits a rewriting reviewer would have forced in.
 
 **Set up:** `npm install -g @openai/codex && codex login`. The runner lives in
 [Modulario](https://github.com/AkiraTheSquid/Modulario), which `install.sh` clones.
@@ -414,6 +444,13 @@ and it's lowest when you already point the agent at exact files.
 - **Fixed behaviour:** every counterfactual assumes I'd have worked the same way
   without the tool. Someone without a low compact window probably `/clear`s more
   by hand, so treat item 1 as an upper-middle estimate.
+- **Critic verdicts:** `tools/critic_verdicts.py` finds Codex's findings for
+  each critic run, including backgrounded runs read back later and output viewed
+  through `tail`/`jq`. Of 548 runs, 230 had complete JSON findings, 76 only a
+  partial view, 72 were clean, and 170 were unreadable or still open (blocked,
+  empty diff, cancelled, or output gone). The labels come
+  from Claude's text, not its edits, so a finding fixed without comment counts as
+  "no verdict".
 - **Critic loop:** `tools/critic_loop.py` attributes everything from a task's
   first critic call to your next prompt to the critic.
 - **Approximations:** tool-result tokens are approximated as characters ÷ 3.6.
@@ -431,6 +468,7 @@ and it's lowest when you already point the agent at exact files.
 install.sh                       installer (backs up anything it replaces)
 tools/measure.py                 replay your transcripts, price each lever
 tools/critic_loop.py             time + usage the /critic loop adds
+tools/critic_verdicts.py         what Claude did with each Codex finding
 claude/CLAUDE.md                 the rules that make the above automatic
 claude/settings.json             hooks + autoCompactWindow + promptCacheTtl + fileSuggestion
 claude/statusline.sh             model · cost · ctx %, plus the live cache line
