@@ -26,6 +26,8 @@ TTL_1H, TTL_5M = 3600, 300
 EXPLORE_TOOLS = {"Read", "Grep", "Glob"}
 EXPLORE_BASH = re.compile(r"^\s*(cd [^;&]+(&&|;)\s*)?(grep|rg|find|ls|cat|head|tail|sed -n|tree|wc|fd)\b")
 CLI_RE = re.compile(r"(^|[;&|]\s*|\$\(\s*)(gh|vercel|supabase|fly|flyctl|modal|stripe|gcloud|aws)\s")
+# a critic.sh run, also behind timeout/nice/bash wrappers (not `cat critic.sh` etc.)
+CRITIC_RE = re.compile(r"(^|[;&|\n]\s*)((timeout\s+\d+|nice(\s+-n\s+-?\d+)?|bash|sh)\s+)*\S*critic\.sh\b")
 CHARS_PER_TOKEN = 3.6
 
 
@@ -241,7 +243,7 @@ for path in files + sub_files:
             if name and name.startswith("mcp__"):
                 C["mcp_calls"] += 1
                 C["mcp:" + name.split("__")[1]] += 1
-            if name == "Bash" and re.search(r"(^|[;&|]\s*|timeout \d+ )\S*critic\.sh\b", cmd or ""):
+            if name == "Bash" and CRITIC_RE.search(cmd or ""):
                 C["critic_runs"] += 1
                 if e["t0"]:
                     R["critic_seconds"] += max(0.0, e["t"] - e["t0"])

@@ -9,10 +9,8 @@ Every number below comes from replaying my own Claude Code transcripts:
 - **Usage worth $3,330 at API list price** (about $2,400/month), a heavy
   Max-plan workload.
 
-Most people pay for a subscription, not per token, so every saving below is
-shown as a **share of your plan's usage**: how much less of your usage limit the
-same work burns. Cutting usage by a third means about 1.5× as much work fits
-before you hit the limit.
+Most people pay for a subscription, not per token, so usage is shown as a
+**share of your plan's usage limit**, not dollars.
 
 The replay script is in [`tools/measure.py`](tools/measure.py), so you can run it
 on your own history (method and limits at the bottom).
@@ -23,27 +21,55 @@ for you to merge.
 
 ## The ranking
 
-| # | Tool | Plan usage saved | Kind of win | Price |
-|---|---|---|---|---|
-| 1 | **Lower auto-compact window** (300k instead of ~1M) | **~24%**. Turns over 200k context: 24% instead of 50% | usage + some quality | **each agent is slower** |
-| 2 | **CLIs + MCP for every website** | none. **2,060 actions** the agent ran itself instead of you, ~50/day | speed | — |
-| 3 | **collab: parallel sessions** | none per task. **1.37× throughput**, 64 h of wall-clock saved | speed | burns your plan 1.37× faster per hour; overwhelming at 4–5 agents |
-| 4 | **Automatic critic** (Codex reviews every diff) | ~0% of your Claude plan (runs on a ChatGPT/Codex plan). **536 reviews**, about 1 high-severity finding each | quality | **tasks take ~2× as long** |
-| 5 | **Cache protection** (1-hour TTL + cache guard) | **~6%** (3.6% TTL, 2.5% guard) | usage | — |
-| 6 | **Caveman** (terse output) | **1–4%** | usage + reading time | — |
-| 7 | **graphify** (codebase knowledge graph) | **2–4%** more possible; barely used yet | usage + speed | — |
-| 8 | **`@` file picker** | too new to measure (74 prompts since late October) | speed | — |
+Each column is a % change against stock Claude Code. Negative usage is good;
+positive quality and speed are good. Every cell says where its number comes from:
+**M** = measured from my transcripts, **L** = from a published benchmark,
+**E** = my estimate.
 
-**Total: 31–33% less plan usage than stock Claude Code, so about 1.5× as much
-work fits in the same subscription.** On top of that come the speed and quality
-wins, which don't show up in usage at all. Details for each are below, in the
-same order.
+- **Plan usage:** how much of your usage limit the same work burns.
+- **Quality:** defects caught before they reach you.
+- **Speed:** work finished per wall-clock hour, across all my work.
 
-How the shares are computed: each saving ÷ what stock Claude Code would have
-used for the same work. That assumes your plan counts tokens with the same
-weights as API prices (cache reads cheap; cache writes and output expensive).
-Anthropic doesn't publish the formula. If your plan counts cache reads as even
-cheaper, item 1 shrinks and item 5 matters more.
+| # | Tool | Plan usage | Quality | Speed | Downside |
+|---|---|---|---|---|---|
+| 1 | **Lower auto-compact window** (300k instead of ~1M) | **−24%** M | +5% E | −5% E (pauses alone −2% M) | Each summary drops detail and the agent re-reads files; 273 pauses of ~67 s |
+| 2 | **CLIs + MCP for every website** | 0% E | +5% E | +10% E | The agent can deploy and write to production itself; a wrong command hits real systems |
+| 3 | **collab: parallel sessions** | 0% per task M | −5% E | **+37%** M | Drains your plan 1.37× faster per hour; you become the bottleneck at 4–5 agents; conflicts between agents' changes slip through |
+| 4 | **Automatic critic** (Codex reviews every diff) | +10% M (upper bound) | **+33%** L | **−14%** M | Tasks it runs on take **1.84×** as long M; applying Codex's fixes blindly made Claude's code worse in one benchmark |
+| 5 | **Cache protection** (1-hour TTL + cache guard) | **−6%** M | 0% | 0% E | The guard blocks your prompt after >1 h idle (156 times) until you pick `/clear`, `/compact` or resend |
+| 6 | **Caveman** (terse output) | −1 to −4% M | −2% E | +2% E | Terse answers can skip the "why"; harder to follow on unfamiliar topics |
+| 7 | **graphify** (codebase knowledge graph) | −2 to −4% E, if used | 0% E | + E | A stale graph misleads; one more hook to break. Barely used yet, so it's left out of the total |
+| | **Combined** | **≈ −25%** (≈1.33× as much work per plan) | **≈ +35%** E | **≈ +26 to +35%** | |
+
+**How the combined row is computed.** It multiplies each column's factors
+(e.g. 0.76 × 0.94 × …), adjusted where two tools clearly aren't independent:
+- **Usage:**
+  - The compact window, cache and caveman compound: a bigger context under a
+    5-minute cache costs more than either alone. So I add their shares (−32.5%)
+    rather than multiply them (−30%).
+  - Then ×1.10 for the critic's extra Claude turns: **−25%** (−24% to −26%).
+  - With graphify in daily use, roughly −27%.
+- **Speed:**
+  - Straight multiplication gives **+26%**.
+  - collab's 1.37× was measured with the critic and compaction already on, and
+    their slow stretches are when you switch to another pane. So part of their
+    cost is already hidden inside the 1.37×, and the true figure is likely
+    higher. My estimate is up to **+35%**.
+- **Quality:**
+  - Multiplying gives +37%, but the columns mix different measures, so treat it
+    as rough. The critic dominates it.
+  - The critic also catches some conflicts between agents, so collab's −5% is
+    probably smaller.
+
+**Plan usage assumes** your plan counts tokens with the same weights as API
+prices (cache reads cheap; cache writes and output expensive). Anthropic doesn't
+publish the formula. I tried to calibrate it from my three usage-limit hits, but
+they held 7× different amounts of Claude Code usage under every weighting I
+tried. Usage from claude.ai chat and other devices counts against the same limit
+and isn't in the transcripts. If your plan counts cache reads as even cheaper,
+item 1 shrinks and item 5 matters more.
+
+Details for each tool are below, in the same order.
 
 ### Two of these make each agent slower, and that's fine
 
@@ -220,19 +246,24 @@ unprompted:
 - before saying a bug is fixed;
 - before every commit or deploy.
 
-**Measured:** 536 critic runs in 6 weeks, about 13 a day. The 113 reviews kept on
+**Measured:** 545 critic runs in 6 weeks, about 13 a day. The 113 reviews kept on
 disk contain **116 high-, 320 medium- and 150 low-severity findings**. Claude
 verifies each one before acting, and not every finding is real, but that's about
-one serious issue per review caught before it shipped. The review runs on a
-ChatGPT/Codex plan, so it uses ~0% of your Claude plan. Claude's own turns
-reconciling the findings do cost a little; that isn't measured here.
+one serious issue per review caught before it shipped. The review itself runs
+on a ChatGPT/Codex plan. Claude's own turns reconciling and fixing cost up to
+~10% more Claude usage (below).
 
-**Trade-off: it roughly doubles how long a task takes.**
-- **Waiting on Codex:** 536 runs added **10.9 hours** of pure waiting. That's a
-  lower bound, since background runs aren't counted.
-- **The loop around it:** the bigger cost is reconciling the findings, fixing,
-  and re-verifying. In practice a task with the critic takes **about twice as
-  long** as without it. That 2× is my experience, not a measurement.
+**Trade-off: tasks it runs on take 1.84× as long.**
+Measured with [`tools/critic_loop.py`](tools/critic_loop.py). The "loop" runs
+from the first critic call in a task to my next prompt:
+- **Per task:** the whole task took **1.84×** as long as the work before the
+  first critic call (median 1.76×; middle half 1.39× to 2.78×), over 399 tasks.
+- **Across all my work:** critic loops took **13.9% of active time** (−14%
+  speed) and **9.6% of Claude usage** (about +10%).
+- **Upper bounds:** both numbers include whatever happened after the review
+  before I next typed, such as the commit, deploy and reply.
+- **Codex itself:** 545 runs spent **11.1 hours** waiting on Codex. The rest is
+  Claude reconciling, fixing and re-verifying.
 - **What you get back is quality.** With parallel panes (item 3), the extra time
   is mostly time you spend on other agents anyway.
 
@@ -323,22 +354,7 @@ corpus. Independent tests on real code find 5–10× fewer tokens on orientation
 queries in repos with hundreds of files, and ~1–3× under 100 files. If a quarter
 to a half of my exploration were orientation queries cut by 80–90%: **−$57 to
 −$128 more, 2–4% of what I use now**. That's real but small next to items 1–5,
-and it's lowest when you already point the agent at exact files (item 8).
-
-## 8. A better `@` file picker
-
-`file-suggestion.sh` (settings key `fileSuggestion`) replaces the `@` autocomplete:
-- **Wider search:** the current project first, then `~/Applications`, then the
-  whole home folder. Folders are included too.
-- **Smarter ranking:** exact name > prefix > substring, shallower paths first.
-- **Aliases:** `@app` jumps to a project folder; `@app readme` searches only
-  inside it.
-
-**Measured:** 74 prompts carried `@` path references, and the picker only arrived
-in late October. Pointing the agent at the exact file skips its search turns and
-makes cross-repo references instant. Too new to measure its share of usage.
-
-**Needs:** `rg`, `fzf`, `jq`.
+and it's lowest when you already point the agent at exact files.
 
 ---
 
@@ -374,6 +390,8 @@ makes cross-repo references instant. Too new to measure its share of usage.
 - **Fixed behaviour:** every counterfactual assumes I'd have worked the same way
   without the tool. Someone without a low compact window probably `/clear`s more
   by hand, so treat item 1 as an upper-middle estimate.
+- **Critic loop:** `tools/critic_loop.py` attributes everything from a task's
+  first critic call to your next prompt to the critic.
 - **Approximations:** tool-result tokens are approximated as characters ÷ 3.6.
 - **Overlap:** the savings are treated as additive; interactions are ignored.
   These largely compound rather than overlap: a bigger context under a 5-minute
@@ -388,6 +406,7 @@ makes cross-repo references instant. Too new to measure its share of usage.
 ```
 install.sh                       installer (backs up anything it replaces)
 tools/measure.py                 replay your transcripts, price each lever
+tools/critic_loop.py             time + usage the /critic loop adds
 claude/CLAUDE.md                 the rules that make the above automatic
 claude/settings.json             hooks + autoCompactWindow + promptCacheTtl + fileSuggestion
 claude/statusline.sh             model · cost · ctx %, plus the live cache line
