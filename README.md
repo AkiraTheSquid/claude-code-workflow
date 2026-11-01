@@ -73,18 +73,7 @@ published billing rate.
   179k calls.
 
 Those were measured on Opus 4.6. Opus 5.5's API read rate is 0.05×; if plans
-still count reads at 0.1×, item 1 is worth more than shown here. My own
-calibration attempt failed: my three usage-limit hits held 7× different amounts
-of Claude Code usage, because claude.ai chat and other devices count against
-the same limit and aren't in the transcripts.
-
-**Tried and dropped: caveman** (terse-output plugin, "~75% fewer tokens").
-- **Small ceiling:** that 75% applies only to prose, which is ~6% of my output
-  tokens. Output is ~22% of usage. So even full compliance saves 1–4%.
-- **Not followed:** the agent ignored it in practice. Its replies averaged
-  **8.4 articles ("the/a/an") per 100 words**, which is ordinary English;
-  caveman text should be near zero.
-- **Measured saving:** ≈0%, and compressed answers are harder to read.
+still count reads at 0.1×, item 1 is worth more than shown here.
 
 Details for each tool are below, in the same order.
 
